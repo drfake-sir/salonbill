@@ -1,0 +1,11 @@
+{
+  "entrypoint": "index.mjs",
+  "compatibilityDate": "2025-09-01",
+  "modules": [
+    {
+      "name": "index.mjs",
+      "type": "esm",
+      "path": "./deploy-worker/index.mjs"
+    }
+  ]
+}

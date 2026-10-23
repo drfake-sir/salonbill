@@ -1,0 +1,30 @@
+{
+  "compatibility_date": "2025-09-01",
+  "main": ".output/server/index.mjs",
+  "name": "salonbill-local",
+  "compatibility_flags": ["nodejs_compat"],
+  "no_bundle": true,
+  "assets": {
+    "binding": "ASSETS",
+    "directory": "./.output/public"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "salonbill",
+      "database_id": "local-salonbill"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "BACKUPS",
+      "bucket_name": "salonbill-backups"
+    }
+  ],
+  "rules": [
+    {
+      "type": "ESModule",
+      "globs": ["**/*.mjs", "**/*.js"]
+    }
+  ]
+}
