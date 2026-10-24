@@ -73,7 +73,17 @@ export type SyncResponse = {
   leases: Record<string, LeaseBlock>;
 };
 
-export type AuthRequest = { pin?: string | undefined; token?: string | undefined };
+export type AuthRequest = {
+  pin?: string | undefined;
+  token?: string | undefined;
+  /**
+   * Forgot-owner-PIN recovery: verify the caller knows the salon cloud PIN
+   * WITHOUT any side effect — an empty server refuses instead of adopting the
+   * supplied PIN, and a supplied token never triggers a rotation. The server's
+   * existing lockout still applies to failed attempts.
+   */
+  verifyOnly?: boolean | undefined;
+};
 export type AuthResponse = { ok: boolean; token?: string | undefined; error?: string | undefined };
 
 export type AuthRecord = { salt: string; hash: string };
@@ -167,6 +177,17 @@ export async function runAuth(store: SyncStore, req: AuthRequest): Promise<AuthR
     await store.setCounter(AUTH_ATTEMPTS_KEY, 0);
     await store.setCounter(AUTH_LOCK_KEY, 0);
   };
+
+  // Recovery check: pure verification of an already-configured salon PIN.
+  if (req.verifyOnly) {
+    if (!existing)
+      return { ok: false, error: "Salon cloud PIN is not set yet — connect a device first" };
+    if (PIN_RE.test(pin) && (await hashToken(pin, existing.salt)) === existing.hash) {
+      await recordSuccess();
+      return { ok: true, token: existing.hash };
+    }
+    return { ok: false, error: await recordFailure() };
+  }
 
   if (!existing) {
     if (!PIN_RE.test(pin)) return { ok: false, error: pinError };

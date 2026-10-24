@@ -7,12 +7,14 @@
  *  - monthly off-platform copy (both files, to be emailed / Drive'd)
  */
 import { db, logAudit, deviceLabel, type Bill } from "./db";
-import { istDate, istTime, toCsvFile } from "./earnings";
+import { istDate, istDayStart, istTime, istWeekday, toCsvFile } from "./earnings";
 
 /** Device-local markers (localStorage) for backup hygiene reminders. */
 export const META_KEYS = {
   offsite: "sb-offsite-export-at",
   drill: "sb-restore-drill-at",
+  /** When this device last downloaded a JSON backup (Sunday reminder). */
+  sunday: "sb-sunday-backup-at",
 } as const;
 
 export function getMeta(key: string): number | null {
@@ -110,11 +112,25 @@ export async function snapshotAll(): Promise<Record<string, unknown>> {
 
 export const dateSlug = () => new Date().toISOString().slice(0, 10);
 
+/**
+ * Should the owner be nudged to download this week's backup?
+ *
+ * Visible to the OWNER only on Sundays (IST — the salon's week, never the
+ * browser's zone), and it clears as soon as a backup is downloaded that same
+ * IST day, so a completed download silences it for the rest of the day.
+ */
+export function shouldRemindSundayBackup(now: number, lastBackupAt: number | null): boolean {
+  if (istWeekday(now) !== 6) return false; // 6 = Sunday (0 = Monday)
+  if (lastBackupAt === null) return true;
+  return istDayStart(lastBackupAt) !== istDayStart(now);
+}
+
 /** Full JSON backup download (the restore format). Returns bills count. */
 export async function downloadLocalBackup(): Promise<number> {
   const data = await snapshotAll();
   const bills = (data["bills"] as unknown[] | undefined)?.length ?? 0;
   downloadText(`salonbill-backup-${dateSlug()}.json`, JSON.stringify(data), "application/json");
+  setMeta(META_KEYS.sunday, Date.now());
   await logAudit("backup.download", "manual");
   return bills;
 }
@@ -140,6 +156,7 @@ export async function downloadMonthlyCopy(): Promise<{ bills: number }> {
   downloadText(`salonbill-monthly-${slug}.json`, JSON.stringify(data), "application/json");
   downloadText(`salonbill-monthly-${slug}-bills.csv`, billsToCsv(all), "text/csv;charset=utf-8");
   setMeta(META_KEYS.offsite, Date.now());
+  setMeta(META_KEYS.sunday, Date.now());
   await logAudit("export.offsite", `${all.length} bills`);
   return { bills: all.length };
 }

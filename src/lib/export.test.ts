@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { computeEarnings, earningsToCsv, istDate, istIso, istTime, flatLines } from "./earnings";
-import { billsToCsv } from "./export";
+import { billsToCsv, shouldRemindSundayBackup } from "./export";
 import { applyCancel, deviceLabel, type Bill, type BillLine } from "./db";
 
 /* ------------------------------- fixtures -------------------------------- */
@@ -352,5 +352,37 @@ describe("device and cashier stamp", () => {
   it("exports Unknown device instead of borrowing another device's name", () => {
     const csv = billsToCsv([bill({ deviceName: undefined })]);
     expect(col(rowOf(csv), headerOf(csv), "Device")).toBe("Unknown device");
+  });
+});
+
+/* --------------------------- Sunday backup reminder ---------------------- */
+
+describe("shouldRemindSundayBackup", () => {
+  // 2026-04-19 21:00 IST = 15:30 UTC — a Sunday evening in the salon's zone.
+  const sundayEvening = Date.UTC(2026, 3, 19, 15, 30);
+  const monday = sundayEvening + 4 * 3600_000; // 01:00 IST Monday
+
+  it("never shows outside Sunday", () => {
+    expect(shouldRemindSundayBackup(monday, null)).toBe(false);
+    expect(shouldRemindSundayBackup(sundayEvening - 24 * 3600_000, null)).toBe(false); // Sat
+  });
+
+  it("shows on Sunday when no backup exists yet", () => {
+    expect(shouldRemindSundayBackup(sundayEvening, null)).toBe(true);
+  });
+
+  it("stays up until a backup is downloaded, then clears for the rest of the day", () => {
+    // Downloaded earlier the same IST day → silence.
+    expect(shouldRemindSundayBackup(sundayEvening, sundayEvening - 3600_000)).toBe(false);
+    // Downloaded on a PREVIOUS day → up again next Sunday.
+    expect(shouldRemindSundayBackup(sundayEvening, sundayEvening - 24 * 3600_000)).toBe(true);
+  });
+
+  it("decides on IST, not the machine or UTC zone", () => {
+    // Sat 19:00 UTC = Sun 00:30 IST → already Sunday for the salon → show.
+    expect(shouldRemindSundayBackup(Date.UTC(2026, 3, 18, 19, 0), null)).toBe(true);
+    // Sun 20:00 UTC = Mon 01:30 IST → Sunday is over for the salon → hide,
+    // even though the UTC calendar still says Sunday.
+    expect(shouldRemindSundayBackup(Date.UTC(2026, 3, 19, 20, 0), null)).toBe(false);
   });
 });

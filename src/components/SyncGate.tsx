@@ -5,12 +5,15 @@ import {
   CheckCircle2,
   Cloud,
   CloudOff,
+  Download,
   Loader2,
   ShieldAlert,
   X,
 } from "lucide-react";
 import { toast } from "sonner";
 import { db } from "@/lib/db";
+import { useOwner } from "@/lib/lock";
+import { META_KEYS, downloadLocalBackup, getMeta, shouldRemindSundayBackup } from "@/lib/export";
 import {
   connect,
   everConnected,
@@ -414,6 +417,75 @@ function ConnectSheet({ onClose }: { onClose: () => void }) {
           </form>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Owner-only Sunday nudge to download this week's backup.
+ *
+ * Every salon keeps its week's takings on one phone; a Sunday reminder is the
+ * habit that gets a copy off it. Shown only on Sundays (IST, never the
+ * browser's zone) and only until a backup is downloaded that same IST day, so
+ * a completed download silences it for the rest of the day. Staff never see
+ * it — they cannot export, so it would be a dead end for them.
+ */
+export function BackupReminder() {
+  const owner = useOwner();
+  // localStorage differs between SSR HTML and the first client render — read
+  // it only after mount to keep hydration consistent (same as DataWarnings).
+  const [mounted, setMounted] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+    setSavedAt(getMeta(META_KEYS.sunday));
+    // Tick every minute AND whenever the owner returns to the tab: a Sunday
+    // reminder must appear the moment the salon opens the app, even if the
+    // machine slept through the last minute tick.
+    const tick = () => setNow(Date.now());
+    const t = setInterval(tick, 60_000);
+    document.addEventListener("visibilitychange", tick);
+    window.addEventListener("focus", tick);
+    return () => {
+      clearInterval(t);
+      document.removeEventListener("visibilitychange", tick);
+      window.removeEventListener("focus", tick);
+    };
+  }, []);
+
+  if (!mounted || !owner) return null;
+  if (!shouldRemindSundayBackup(now, savedAt)) return null;
+
+  return (
+    <div className="mb-3 flex flex-wrap items-center gap-3 rounded-2xl bg-gold-soft px-4 py-3 text-sm font-medium">
+      <Download className="size-4 shrink-0 text-accent-foreground" />
+      <span className="min-w-0 flex-1">
+        <strong>Sunday backup day</strong> — download this week&apos;s backup so a lost or damaged
+        phone can&apos;t take the week&apos;s bills with it.
+      </span>
+      <button
+        onClick={() => {
+          if (busy) return;
+          setBusy(true);
+          void downloadLocalBackup()
+            .then((n) => {
+              setSavedAt(Date.now());
+              toast.success(`Backup saved · ${n} bills — email or Drive it`);
+            })
+            .catch((e) => {
+              console.error(e);
+              toast.error("Could not build the backup");
+            })
+            .finally(() => setBusy(false));
+        }}
+        disabled={busy}
+        className="tap shrink-0 rounded-xl bg-accent px-4 py-2 font-semibold text-accent-foreground disabled:opacity-60"
+      >
+        {busy ? "Preparing…" : "Download backup"}
+      </button>
     </div>
   );
 }

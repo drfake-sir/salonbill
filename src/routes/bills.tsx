@@ -77,12 +77,13 @@ function Bills() {
       toast.error("Unlock with owner PIN (Settings) to cancel bills");
       return;
     }
-    const reason = prompt(`Reason for cancelling ${b.number}?`);
+    const reason = prompt(`Reason for cancelling ${b.number}?`)?.trim();
+    // Dismissed OR whitespace-only → no cancel (a reason must contain text).
     if (!reason) return;
     try {
       // cancelBill restores product stock atomically, only from "paid", and
       // keeps the original row (status + stamp only — nothing is deleted).
-      await cancelBill(b.id!, reason.trim(), session?.name);
+      await cancelBill(b.id!, reason, session?.name);
       toast.success(`${b.number} cancelled · stock restored`);
     } catch (e) {
       console.error(e);

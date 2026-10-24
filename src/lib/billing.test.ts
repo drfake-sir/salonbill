@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { computeTotals, inr, waRecipient, waLink, waText, billWaText } from "./billing";
-import { validateBackup, billNumberFor, StockShortageError } from "./db";
+import { askDeviceName, validateBackup, billNumberFor, StockShortageError } from "./db";
 import type { Bill, Settings } from "./db";
 
 const line = (price: number, qty = 1) => ({
@@ -121,5 +121,41 @@ describe("inr", () => {
   it("formats Indian-grouped thousands", () => {
     expect(inr(1234)).toBe("₹1,234");
     expect(inr(450000)).toBe("₹4,50,000");
+  });
+});
+
+describe("askDeviceName", () => {
+  it("uses the owner's answer, trimmed and length-capped", () => {
+    expect(askDeviceName("Device ab12", () => "  Counter  ")).toBe("Counter");
+    expect(askDeviceName("Device ab12", () => "x".repeat(80))).toHaveLength(40);
+  });
+
+  it("falls back when the dialog is dismissed or answered blank", () => {
+    expect(askDeviceName("Device ab12", () => null)).toBe("Device ab12");
+    expect(askDeviceName("Device ab12", () => "   ")).toBe("Device ab12");
+    expect(askDeviceName("Device ab12", () => 42 as unknown as string)).toBe("Device ab12");
+  });
+
+  it("REGRESSION: a throwing prompt still yields a name instead of failing", () => {
+    // connect() calls this AFTER saving the sync token, so a throw here used
+    // to abort the connection and leave the device unnamed forever — every
+    // bill it wrote then exported as "Unknown device".
+    const boom = () => {
+      throw new Error("prompt() is not supported.");
+    };
+    let name: string | undefined;
+    expect(() => {
+      name = askDeviceName("Device ab12", boom);
+    }).not.toThrow();
+    expect(name).toBe("Device ab12");
+  });
+
+  it("always produces a non-empty name so a bill is never stamped blank", () => {
+    expect(askDeviceName("Device ab12", () => "")).not.toBe("");
+    expect(
+      askDeviceName("Device ab12", () => {
+        throw new Error("x");
+      }),
+    ).not.toBe("");
   });
 });

@@ -13,7 +13,17 @@ import {
   Smartphone,
   Upload,
 } from "lucide-react";
-import { db, logAudit, restoreBackup, validateBackup, type Bill, type Settings } from "@/lib/db";
+import {
+  db,
+  getDeviceName,
+  logAudit,
+  restoreBackup,
+  setDeviceName,
+  validateBackup,
+  type Bill,
+  type Settings,
+} from "@/lib/db";
+import { removeDemoData } from "@/lib/demoData";
 import { printBill } from "@/lib/print";
 import { OwnerOnly } from "@/components/PinGate";
 import { ReceiptView } from "@/components/ReceiptView";
@@ -28,6 +38,7 @@ import {
   snapshotAll,
 } from "@/lib/export";
 import { getSyncToken } from "@/lib/syncClient";
+import { hashPin, isValidNewPin } from "@/lib/pins";
 import { backupNowFn, backupStatusFn } from "@/syncFns";
 import {
   canInstall,
@@ -119,9 +130,28 @@ function SettingsPage() {
   );
 
   const setStaffPin = async (id: number, pin: string | undefined) => {
-    await db.stylists.update(id, { pin });
+    // New PINs must be 6-8 digits; existing 4-digit PINs keep working until
+    // this owner sets a replacement. Stored salted-hash only — never plain.
+    if (pin !== undefined && !isValidNewPin(pin)) {
+      toast.error("PIN must be 6-8 digits (or empty to disable)");
+      return;
+    }
+    await db.stylists.update(id, { pin: pin === undefined ? undefined : await hashPin(pin) });
     await logAudit("staff.pin", `staff #${id}`);
     toast.success("Staff PIN updated — synced to every device");
+  };
+
+  const changeOwnerPin = async () => {
+    const p = prompt("New owner PIN (6-8 digits)");
+    if (p === null) return; // cancelled
+    if (!isValidNewPin(p)) {
+      toast.error("Owner PIN must be 6-8 digits");
+      return;
+    }
+    // Hashed immediately: the plain value never touches storage.
+    set({ ownerPin: await hashPin(p) });
+    await logAudit("pin.change", "");
+    toast.success("Owner PIN updated");
   };
 
   const restore = async (file: File) => {
@@ -135,9 +165,18 @@ function SettingsPage() {
       const ok = window.confirm(
         `Restore backup from ${file.name}?\n\n` +
           `${count} bills will REPLACE all records on this device (current bills, catalog, customers, settings).\n\n` +
-          "Download a backup of this device first if you may need it.",
+          "A safety copy of this device's current data will be downloaded first.",
       );
       if (!ok) return;
+      // Automatic safety copy BEFORE anything is replaced. If the copy cannot
+      // be produced, the restore is aborted — current data stays untouched.
+      try {
+        await downloadLocalBackup();
+      } catch (e) {
+        console.error(e);
+        toast.error("Could not save a safety copy of current data — restore cancelled.");
+        return;
+      }
       const r = await restoreBackup(parsed as Record<string, unknown[]>);
       await logAudit("backup.restore", `${file.name}: ${r.bills} bills`);
       toast.success(`Backup restored · ${r.bills} bills`);
@@ -199,21 +238,22 @@ function SettingsPage() {
                 <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>
                 <input
                   key={`${p.id}-${p.pin ?? "none"}`}
-                  defaultValue={p.pin ?? ""}
+                  defaultValue=""
                   inputMode="numeric"
-                  placeholder="No PIN"
-                  maxLength={4}
+                  placeholder={p.pin ? "PIN set" : "No PIN"}
+                  maxLength={8}
                   aria-label={`${p.name} PIN`}
                   onBlur={(e) => {
-                    const v = e.target.value.replace(/\D/g, "").slice(0, 4);
+                    const v = e.target.value.replace(/\D/g, "").slice(0, 8);
                     if (v === "") {
+                      if (!p.pin) return; // already unset — don't churn the row
                       void setStaffPin(p.id!, undefined);
                       return;
                     }
-                    if (v.length === 4) void setStaffPin(p.id!, v);
+                    if (isValidNewPin(v)) void setStaffPin(p.id!, v);
                     else {
-                      e.target.value = p.pin ?? "";
-                      toast.error("PIN must be 4 digits (or empty to disable)");
+                      e.target.value = "";
+                      toast.error("PIN must be 6-8 digits (or empty to disable)");
                     }
                   }}
                   className="tap w-28 rounded-xl border border-input bg-card px-3 py-2 text-center text-lg font-bold tracking-[0.3em] outline-none focus:ring-2 focus:ring-ring"
@@ -222,33 +262,31 @@ function SettingsPage() {
             ))}
           </div>
           <p className="text-xs text-muted-foreground">
-            Seeded demo PINs (1111 / 2222 / 3333 / 4444) are placeholders — set real ones before
-            going live.
+            PINs are stored as a salted hash and never shown here again. Existing 4-digit PINs keep
+            working until you replace them (new PINs need 6-8 digits); seeded demo PINs (1111 / 2222
+            / 3333 / 4444) are placeholders — set real ones before going live.
           </p>
         </section>
 
         <CloudBackupCard />
+        <DemoDataCard />
         <BackupHygieneCard onRestoreFile={restore} fileRef={fileRef} />
+        <DeviceNameCard />
         <DataSafetyCard />
 
         {/* ------------------------ owner credentials ------------------------ */}
         <section className="rounded-3xl bg-card p-5 shadow-soft">
           <h2 className="mb-3 font-bold">Owner PIN</h2>
           <button
-            onClick={() => {
-              const p = prompt("New 4-digit owner PIN");
-              if (p && /^\d{4}$/.test(p)) {
-                set({ ownerPin: p });
-                logAudit("pin.change", "");
-                toast.success("Owner PIN updated");
-              }
-            }}
+            onClick={() => void changeOwnerPin()}
             className="tap rounded-xl bg-secondary px-5 py-2.5 font-semibold"
           >
             Change owner PIN
           </button>
           <p className="mt-2 text-sm text-muted-foreground">
-            The owner PIN unlocks bill cancellation, monthly totals, exports and this screen.
+            The owner PIN unlocks bill cancellation, monthly totals, exports and this screen. New
+            PINs need 6-8 digits (existing 4-digit PINs keep working until changed) and are stored
+            as a salted hash.
           </p>
         </section>
       </div>
@@ -268,6 +306,65 @@ function SettingsPage() {
         </PrintPortal>
       </div>
     </div>
+  );
+}
+
+/* ----------------------------- demo data --------------------------------- */
+
+/**
+ * One-step removal of the seeded demo staff/services/customers. Same flow as
+ * the first-run setup screen: automatic local backup first, refused when any
+ * real bill exists, explicit confirmation, deletions sync as tombstones.
+ */
+function DemoDataCard() {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await removeDemoData();
+      if (r.ok) {
+        await logAudit(
+          "demo.remove",
+          `${r.removed.stylists.length} staff, ${r.removed.services.length} services, ` +
+            `${r.removed.customers.length} customers`,
+        );
+        toast.success(
+          "Demo data removed · " +
+            `${r.removed.stylists.length} staff, ${r.removed.services.length} services, ` +
+            `${r.removed.customers.length} customers — backup downloaded first`,
+        );
+      } else if (r.reason === "real-bills") {
+        toast.error("This salon has real bills — demo data was NOT removed.");
+      } else if (r.reason === "backup-failed") {
+        toast.error("Could not save a safety backup — nothing was removed.");
+      } else if (r.reason === "no-demo") {
+        toast.info("No demo data found on this device.");
+      }
+      // "declined" → the owner cancelled the confirmation, stay silent
+    } catch (e) {
+      console.error(e);
+      toast.error("Could not remove demo data — nothing was changed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="rounded-3xl bg-card p-5 shadow-soft">
+      <h2 className="mb-1 font-bold">Demo data</h2>
+      <p className="mb-3 text-sm text-muted-foreground">
+        New salons start with demo staff (Karthik, Priya, Arun, Divya), demo services and demo
+        customers. Remove them in one step once you've added your own — a local backup is downloaded
+        first, and removal is refused if any real bill exists.
+      </p>
+      <button
+        onClick={() => void run()}
+        disabled={busy}
+        className="tap rounded-xl bg-secondary px-5 py-2.5 font-semibold disabled:opacity-60"
+      >
+        {busy ? "Removing…" : "Remove demo data"}
+      </button>
+    </section>
   );
 }
 
@@ -522,6 +619,55 @@ function BackupHygieneCard({
         {drill === null
           ? "No restore drill recorded yet — run one now to prove the restore path works."
           : `Last restore drill: ${new Date(drill).toLocaleDateString("en-IN")}`}
+      </p>
+    </section>
+  );
+}
+
+/* ------------------------------ this device ------------------------------ */
+
+/**
+ * Name this physical counter.
+ *
+ * The name is asked once at first connect, but some webviews refuse
+ * `window.prompt` entirely, so the owner needs a place to set it here —
+ * otherwise every bill from this device would silently export as
+ * "Unknown device". Renaming affects FUTURE bills only; saved bills keep the
+ * name they were stamped with, exactly like a receipt reprint.
+ */
+function DeviceNameCard() {
+  const [name, setName] = useState(() => getDeviceName());
+  return (
+    <section className="rounded-3xl bg-card p-5 shadow-soft">
+      <div>
+        <h2 className="flex items-center gap-2 font-bold">
+          <Smartphone className="size-4 text-accent-foreground" /> This device
+        </h2>
+        <p className="text-sm text-muted-foreground">
+          Bills saved on this device are stamped with this name, so exports and bill details can
+          tell your counter apart from your phone.
+        </p>
+      </div>
+      <label className="block">
+        <span className="mb-1 block text-sm font-medium text-muted-foreground">Device name</span>
+        <input
+          value={name}
+          maxLength={40}
+          placeholder="Counter, Owner phone…"
+          onChange={(e) => setName(e.target.value)}
+          onBlur={() => {
+            const clean = name.trim().slice(0, 40);
+            setDeviceName(clean);
+            setName(clean);
+            void logAudit("device.name", clean || "(cleared)");
+          }}
+          className="tap w-full rounded-xl border border-input bg-card px-3 py-2 outline-none focus:ring-2 focus:ring-ring"
+        />
+      </label>
+      <p className="mt-2 text-xs text-muted-foreground">
+        {name.trim()
+          ? `New bills on this device will read “${name.trim()}”.`
+          : "No name set — new bills on this device will read \u201cUnknown device\u201d."}
       </p>
     </section>
   );

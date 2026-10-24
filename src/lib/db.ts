@@ -1,5 +1,6 @@
 import Dexie, { type Table } from "dexie";
 import { takeBillNumberSeq, takeRowId, type LeasedTable } from "@/lib/lease";
+import { hashPin } from "@/lib/pins";
 
 export type Category = { id?: number | undefined; name: string; order: number };
 export type Service = {
@@ -27,7 +28,11 @@ export type Stylist = {
   phone: string;
   commissionPct: number;
   active: boolean;
-  /** 4-digit personal PIN — signs the staff member in and stamps bills. */
+  /**
+   * Personal sign-in PIN — stored as a salted hash (`s1$…`, see lib/pins).
+   * Legacy installs still hold plain digits until that member's next
+   * successful sign-in, which migrates them.
+   */
   pin?: string | undefined;
 };
 export type Customer = {
@@ -324,16 +329,22 @@ export const defaultSettings: Settings = {
 export async function logAudit(action: string, detail: string) {
   await db.audit.add({ at: Date.now(), action, detail });
 }
-
 export async function seedIfEmpty() {
   if (await db.settings.get(1)) return;
+  // Salted hashes from the very first write: a brand-new device never puts a
+  // plain PIN into storage (or into the first sync push).
+  const [ownerPin, staffPins] = await Promise.all([
+    hashPin(defaultSettings.ownerPin),
+    Promise.all(["1111", "2222", "3333", "4444"].map((p) => hashPin(p))),
+  ]);
   await db.transaction(
     "rw",
     [db.settings, db.categories, db.services, db.products, db.stylists, db.customers],
     async () => {
       // Another tab may have seeded between our check and this transaction.
+
       if (await db.settings.get(1)) return;
-      await db.settings.put(defaultSettings);
+      await db.settings.put({ ...defaultSettings, ownerPin });
       const cats = ["Hair", "Colour", "Skin", "Spa", "Nails"];
       // Explicit ids: seeds are deterministic on every fresh device and the
       // creating hook (which can't read an auto key) still records them.
@@ -407,7 +418,8 @@ export async function seedIfEmpty() {
         },
       ]);
       // Default staff PINs so identity stamping works out of the box — the
-      // owner changes them in Settings → Staff & PINs.
+      // owner changes them in Settings → Staff & PINs. Stored as salted
+      // hashes; the demo digits (1111 / 2222 / 3333 / 4444) still sign in.
       await db.stylists.bulkPut([
         {
           id: 1,
@@ -415,11 +427,32 @@ export async function seedIfEmpty() {
           phone: "9840011111",
           commissionPct: 10,
           active: true,
-          pin: "1111",
+          pin: staffPins[0],
         },
-        { id: 2, name: "Priya", phone: "9840022222", commissionPct: 12, active: true, pin: "2222" },
-        { id: 3, name: "Arun", phone: "9840033333", commissionPct: 10, active: true, pin: "3333" },
-        { id: 4, name: "Divya", phone: "9840044444", commissionPct: 15, active: true, pin: "4444" },
+        {
+          id: 2,
+          name: "Priya",
+          phone: "9840022222",
+          commissionPct: 12,
+          active: true,
+          pin: staffPins[1],
+        },
+        {
+          id: 3,
+          name: "Arun",
+          phone: "9840033333",
+          commissionPct: 10,
+          active: true,
+          pin: staffPins[2],
+        },
+        {
+          id: 4,
+          name: "Divya",
+          phone: "9840044444",
+          commissionPct: 15,
+          active: true,
+          pin: staffPins[3],
+        },
       ]);
       const now = Date.now();
       await db.customers.bulkPut(
@@ -465,6 +498,40 @@ export function setDeviceName(name: string) {
   } catch {
     /* private mode */
   }
+}
+
+const DEVICE_NAME_PROMPT =
+  "Name this device (e.g. Counter, Owner phone) — shown on every bill it creates";
+
+/**
+ * Ask the owner to name this device, and return the name to store.
+ *
+ * `window.prompt` is not available everywhere: some webviews and automation
+ * contexts throw `prompt() is not supported` instead of returning null. It
+ * used to be called unguarded inside connect(), which aborted the connection
+ * after the sync token was saved but BEFORE the device was named — so the
+ * device stayed unnamed forever and every bill it wrote exported as
+ * "Unknown device".
+ *
+ * The question is therefore best-effort: a thrown prompt, a dismissed
+ * dialog, a non-string answer or a blank one all fall back to `suggested`, so
+ * a name is always produced and connect() can never fail here.
+ *
+ * `ask` is injectable so the failure modes are testable without a dialog.
+ */
+export function askDeviceName(
+  suggested: string,
+  ask: (message: string, defaultValue: string) => string | null = (message, defaultValue) =>
+    window.prompt(message, defaultValue),
+): string {
+  let answer: unknown;
+  try {
+    answer = ask(DEVICE_NAME_PROMPT, suggested);
+  } catch {
+    answer = null;
+  }
+  const clean = typeof answer === "string" ? answer.trim().slice(0, 40) : "";
+  return clean || suggested;
 }
 
 /** Label used wherever a bill's device is shown. Never guessed. */
@@ -552,6 +619,17 @@ export function applyCancel(
 }
 
 /**
+ * A cancel reason must contain real text. Whitespace-only input (and null)
+ * is rejected with a throw so a bill can never be cancelled with an empty-
+ * looking reason; valid input is returned trimmed.
+ */
+export function normalizeCancelReason(raw: string | null | undefined): string {
+  const reason = (raw ?? "").trim();
+  if (!reason) throw new Error("A cancel reason is required");
+  return reason;
+}
+
+/**
  * Cancel a paid bill and put its product stock back, atomically.
  *
  * APPEND-ONLY: the original row is never deleted or rewritten beyond its
@@ -565,6 +643,8 @@ export async function cancelBill(
   reason: string,
   cancelledBy?: string | undefined,
 ): Promise<Bill> {
+  // Reject a whitespace-only reason before anything is touched.
+  const cleanReason = normalizeCancelReason(reason);
   return db.transaction("rw", [db.bills, db.products, db.audit], async () => {
     const b = await db.bills.get(id);
     if (!b) throw new Error("Bill not found");
@@ -579,17 +659,17 @@ export async function cancelBill(
         });
     }
     const at = Date.now();
-    const updated = applyCancel(b, reason, cancelledBy, at);
+    const updated = applyCancel(b, cleanReason, cancelledBy, at);
     await db.bills.update(id, {
       status: "cancelled",
-      cancelReason: reason,
+      cancelReason: cleanReason,
       cancelledBy,
       cancelledAt: at,
     });
     await db.audit.add({
       at,
       action: "bill.cancel",
-      detail: `${b.number}: ${reason}${cancelledBy ? ` (by ${cancelledBy})` : ""}`,
+      detail: `${b.number}: ${cleanReason}${cancelledBy ? ` (by ${cancelledBy})` : ""}`,
     });
     return updated;
   });

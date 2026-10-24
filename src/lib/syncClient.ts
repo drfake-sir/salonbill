@@ -14,6 +14,7 @@
 
 import {
   db,
+  askDeviceName,
   runWithoutEnqueue,
   setOnRestored,
   SYNCED_TABLES,
@@ -45,6 +46,7 @@ const LS = {
   synced: "sb-sync-done", // "1" once this device has completed a full first sync
   ever: "sb-sync-ever-connected", // "1" once this device EVER held a token
   last: "sb-sync-last", // ms timestamp of the last successful sync (survives reload)
+  restore: "sb-sync-restore", // "1" while a backup restore still owes the cloud a replaceAll
 } as const;
 
 const ls = {
@@ -222,13 +224,12 @@ export async function connect(pin?: string): Promise<{ ok: boolean; error?: stri
     // Name this device the first time it joins, so bills can say WHICH phone
     // or tablet wrote them. Asked once, then never again.
     if (!getDeviceName()) {
-      const suggested = `Device ${getDeviceId().slice(-4)}`;
-      const name = window.prompt(
-        "Name this device (e.g. Counter, Owner phone) — shown on every bill it creates",
-        suggested,
-      );
-      const clean = (name ?? "").trim().slice(0, 40);
-      setDeviceName(clean || suggested);
+      // Name this device the first time it joins, so bills can say WHICH
+      // phone or tablet wrote them. Asked once, then never again — and asked
+      // through askDeviceName(), which cannot throw: this runs AFTER the token
+      // is stored, so an error here would leave the device permanently
+      // unnamed and every bill stamped "Unknown device".
+      setDeviceName(askDeviceName(`Device ${getDeviceId().slice(-4)}`));
     }
     setStatus({ needsPin: false });
     await syncNow({ forceFirst: true });
@@ -296,11 +297,22 @@ async function drain(token: string, forceFirst: boolean) {
     // seeded or written before the outbox existed (fresh installs, upgrades
     // from pre-sync versions, backup restores) must reach the cloud too.
     const all = await fullDatasetPush();
-    const replaceAll = await fullReplaceSets();
+    // replaceAll makes the server TOMBSTONE every row this device does not
+    // have. On a fresh device the local set is only the seed (6 customers,
+    // 20 services, 4 stylists...), so sending it on a plain first sync would
+    // delete the salon's real customers and catalog rows from the cloud AND
+    // from every other device — the exact wipe this latch exists to prevent:
+    // one new phone joining the salon removed the customers older phones had
+    // added. The local set is authoritative ONLY after an explicit backup
+    // restore, which sets the latch below; that first sync then converges the
+    // cloud to exactly the restored backup.
+    const replaceAll = ls.get(LS.restore) === "1" ? await fullReplaceSets() : undefined;
     let cursor = Number(ls.get(LS.cursor) ?? 0) || 0;
 
-    // Send in chunks of the server cap; the final chunk (or an empty dataset)
-    // carries firstSync so the server finishes its replace step, and only then
+    // Send in chunks of the server cap. EVERY chunk carries firstSync: the
+    // server applies first-sync pushes as insert-if-absent, so a fresh or
+    // upgraded device's starter rows can never overwrite the salon's edited
+    // prices / PINs / names — no matter which chunk they arrive in. Only then
     // is this device marked as having completed its first sync.
     const chunks: PushItem[][] = [];
     for (let i = 0; i < all.length; i += PUSH_CHUNK) chunks.push(all.slice(i, i + PUSH_CHUNK));
@@ -313,7 +325,7 @@ async function drain(token: string, forceFirst: boolean) {
           deviceId: getDeviceId(),
           token,
           cursor,
-          firstSync: last,
+          firstSync: true,
           push: chunks[i],
           replaceAll,
         },
@@ -322,7 +334,12 @@ async function drain(token: string, forceFirst: boolean) {
         throw new Error(res.error === "auth" ? "auth: session expired" : "sync rejected");
       await applyPull(res.pull);
       cursor = res.cursor;
-      if (last) ls.set(LS.synced, "1");
+      if (last) {
+        ls.set(LS.synced, "1");
+        // The restore has been honoured end-to-end: never send id-sets again
+        // until the owner restores another backup.
+        if (replaceAll) ls.del(LS.restore);
+      }
     }
     ls.set(LS.cursor, String(cursor));
     // Everything local was uploaded, so the outbox is fully superseded.
@@ -488,6 +505,9 @@ export function startSyncEngine() {
     // A backup restore replaces everything: wipe the cursor and push it all.
     ls.del(LS.cursor);
     ls.set(LS.synced, "0");
+    // This device's data is now authoritative — the next first sync is allowed
+    // to send replaceAll so the cloud converges to exactly this backup.
+    ls.set(LS.restore, "1");
     if (hasToken()) void syncNow({ forceFirst: true });
   });
 }
