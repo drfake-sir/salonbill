@@ -357,7 +357,7 @@ function MonthlyTotals({ owner, bills }: { owner: boolean; bills: Bill[] }) {
           <div className="flex items-center justify-between">
             <button
               onClick={() => setOffset((o) => o + 1)}
-              className="tap grid size-9 place-items-center rounded-xl bg-secondary"
+              className="tap grid size-11 place-items-center rounded-xl bg-secondary"
               aria-label="Previous month"
             >
               <ChevronLeft className="size-4" />
@@ -366,7 +366,7 @@ function MonthlyTotals({ owner, bills }: { owner: boolean; bills: Bill[] }) {
             <button
               onClick={() => setOffset((o) => Math.max(0, o - 1))}
               disabled={offset === 0}
-              className="tap grid size-9 place-items-center rounded-xl bg-secondary disabled:opacity-40"
+              className="tap grid size-11 place-items-center rounded-xl bg-secondary disabled:opacity-40"
               aria-label="Next month"
             >
               <ChevronRight className="size-4" />

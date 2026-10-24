@@ -371,7 +371,8 @@ function ConnectSheet({ onClose }: { onClose: () => void }) {
           </div>
           <button
             onClick={onClose}
-            className="tap -mr-1 -mt-1 rounded-full p-1 text-muted-foreground"
+            className="tap -mr-2 -mt-2 grid size-11 shrink-0 place-items-center rounded-full text-muted-foreground"
+            aria-label="Close sync sheet"
           >
             <X className="size-5" />
           </button>

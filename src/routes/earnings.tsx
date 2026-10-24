@@ -426,7 +426,7 @@ function EarningsView({
               <button
                 key={s.id}
                 onClick={() => setSelected(s.id!)}
-                className="grid w-full grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-xl bg-secondary px-3 py-2 text-sm"
+                className="grid min-h-11 w-full grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-xl bg-secondary px-3 py-2 text-sm"
               >
                 <span className="truncate text-left font-medium">{s.name}</span>
                 <span className="w-10 text-right tabular-nums">{e.services}</span>

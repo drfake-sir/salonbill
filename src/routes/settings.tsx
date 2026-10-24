@@ -190,7 +190,9 @@ function SettingsPage() {
 
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_auto]">
-      <div className="space-y-6">
+      {/* min-w-0: the stylist-name truncate (nowrap) would otherwise inflate
+          the grid's auto track to its intrinsic width and blow out 360px. */}
+      <div className="min-w-0 space-y-6">
         <h1 className="text-2xl font-extrabold tracking-tight">Settings</h1>
         <section className="grid gap-4 rounded-3xl bg-card p-5 shadow-soft sm:grid-cols-2">
           {field("Salon name", "salonName")}

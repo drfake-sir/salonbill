@@ -343,6 +343,10 @@ function Billing() {
         : null,
     );
     setHeldId(b.id);
+    // Restore the payment mode the bill was held with — otherwise resuming a
+    // held UPI/Card/Wallet bill silently reverts the UI (and the saved bill)
+    // to Cash.
+    setMode(b.payments[0]?.mode ?? "Cash");
   };
 
   const resumeDraft = async (d: Draft) => {
@@ -460,7 +464,7 @@ function Billing() {
           {lines.length > 0 && (
             <button
               onClick={reset}
-              className="text-sm text-muted-foreground hover:text-destructive"
+              className="tap px-2 text-sm text-muted-foreground hover:text-destructive"
             >
               Clear
             </button>
@@ -468,7 +472,7 @@ function Billing() {
           <button
             onClick={() => setSheet(false)}
             aria-label="Close bill"
-            className="tap -mr-2 grid size-10 place-items-center rounded-xl text-muted-foreground hover:bg-secondary lg:hidden"
+            className="tap -mr-2 grid size-11 place-items-center rounded-xl text-muted-foreground hover:bg-secondary lg:hidden"
           >
             <X className="size-5" />
           </button>
@@ -484,7 +488,7 @@ function Billing() {
           <button
             onClick={() => setCust(null)}
             aria-label="Remove customer"
-            className="tap grid size-10 shrink-0 place-items-center"
+            className="tap grid size-11 shrink-0 place-items-center"
           >
             <X className="size-4" />
           </button>
@@ -558,7 +562,7 @@ function Billing() {
         </div>
       )}
 
-      <div className="-mx-1 min-h-0 flex-1 space-y-2 overflow-y-auto overscroll-contain px-1">
+      <div className="-mx-1 min-h-24 flex-1 space-y-2 overflow-y-auto overscroll-contain px-1">
         {!lines.length && (
           <div className="grid place-items-center rounded-2xl border border-dashed py-12 text-center text-muted-foreground">
             <div className="mb-2 text-4xl">✂️</div>Tap a service to start
@@ -621,7 +625,7 @@ function Billing() {
         ))}
       </div>
 
-      <div className="shrink-0 space-y-3 border-t pt-4">
+      <div className="sticky bottom-0 z-10 shrink-0 space-y-3 border-t bg-card pt-4">
         <div className="flex gap-2">
           <div className="flex min-w-0 flex-1 items-center rounded-xl border border-input bg-card">
             <input
@@ -635,7 +639,7 @@ function Billing() {
             />
             <button
               onClick={() => setDiscType(discType === "pct" ? "flat" : "pct")}
-              className="h-11 shrink-0 rounded-r-xl bg-secondary px-3 font-semibold"
+              className="h-11 min-w-11 shrink-0 rounded-r-xl bg-secondary px-3 font-semibold"
             >
               {discType === "pct" ? "%" : "₹"}
             </button>
@@ -779,6 +783,26 @@ function Billing() {
           <span>{inr(totals.total)} →</span>
         </button>
       )}
+      {/* Empty cart + held/unsaved bills: without this entry point the pills
+          below are unreachable on phones (they only render inside the sheet,
+          and the sheet only opens once a service has been tapped — while
+          resuming correctly refuses a non-empty bill). */}
+      {lines.length === 0 && (held.length > 0 || orphans.length > 0) && (
+        <button
+          onClick={() => setSheet(true)}
+          className="tap fixed inset-x-4 bottom-[calc(5rem+env(safe-area-inset-bottom))] z-20 flex items-center justify-between rounded-2xl bg-accent px-5 py-3 font-bold text-accent-foreground shadow-lift lg:hidden"
+        >
+          <span>
+            {[
+              held.length ? `${held.length} held` : "",
+              orphans.length ? `${orphans.length} unsaved` : "",
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
+          <span>Resume →</span>
+        </button>
+      )}
       {sheet && (
         <div
           className="fixed inset-0 z-40 bg-foreground/40 lg:hidden"
@@ -790,7 +814,12 @@ function Billing() {
             className="absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col rounded-t-3xl bg-card p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] animate-in slide-in-from-bottom duration-200"
           >
             <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-border lg:hidden" />
-            <div className="flex min-h-0 flex-1 flex-col">{panel}</div>
+            {/* Scroll the whole panel when it is taller than the sheet (short
+                phones, landscape, keyboard open) so the action footer can stay
+                pinned and reachable instead of hanging below the viewport. */}
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+              {panel}
+            </div>
           </div>
         </div>
       )}
