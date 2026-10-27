@@ -211,11 +211,12 @@ describe("removal wiring", () => {
 /* --------------------------- setup screen wiring -------------------------- */
 
 describe("first-run setup screen wiring", () => {
-  it("AppShell blocks on setup (owner-only) until settings.onboarded is true", () => {
+  it("AppShell delegates both gates to SalonGate (the cloud decides, not the seed)", () => {
     const src = read("..", "components", "AppShell.tsx");
-    expect(src).toMatch(/const needsSetup = !!settings && !settings\.onboarded;/);
-    expect(src).toMatch(/<OwnerOnly>/);
-    expect(src).toMatch(/<SetupScreen \/>/);
+    // Setup / connect / first-sync moved out of AppShell: SalonGate decides
+    // them from the cloud probe + first pull, never from the local seed.
+    expect(src).toMatch(/<SalonGate>\{children\}<\/SalonGate>/);
+    expect(src).not.toMatch(/needsSetup|<OwnerOnly>|<SetupScreen \/>|<CloudGate>/);
     // Settings route stays outside the setup gate (recovery path).
     expect(src).toMatch(/recovery \?/);
   });
@@ -224,7 +225,8 @@ describe("first-run setup screen wiring", () => {
     const src = read("..", "components", "SetupScreen.tsx");
     expect(src).toMatch(/isValidNewPin\(pin\)/);
     expect(src).toMatch(/ownerPin: await hashPin\(pin\), onboarded: true/);
-    expect(src).toMatch(/disabled=\{!valid \|\| busy\}/); // finish stays disabled otherwise
+    // finish stays disabled until the PIN is valid AND shop name/phone are set
+    expect(src).toMatch(/disabled=\{!valid \|\| !validShop \|\| busy\}/);
     expect(src).toMatch(/removeDemoData\(\)/); // offers demo removal too
   });
 

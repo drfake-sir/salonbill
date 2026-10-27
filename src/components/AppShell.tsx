@@ -1,15 +1,11 @@
 import { useEffect, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { useLiveQuery } from "dexie-react-hooks";
 import { Receipt, Scissors, Settings, History, Lock, Unlock, IndianRupee } from "lucide-react";
-import { db, seedIfEmpty } from "@/lib/db";
+import { seedIfEmpty } from "@/lib/db";
 import { setSession, restoreSession, touchOwner, useSession } from "@/lib/lock";
 import { startSyncEngine } from "@/lib/syncClient";
 import { registerServiceWorker, requestPersistentStorage } from "@/lib/pwa";
-import { BackupReminder, CloudGate, DataWarnings, SyncPill } from "./SyncGate";
-import { StaffGate } from "./StaffGate";
-import { OwnerOnly } from "./PinGate";
-import { SetupScreen } from "./SetupScreen";
+import { BackupReminder, DataWarnings, SalonGate, SyncPill } from "./SyncGate";
 
 const nav = [
   { to: "/", label: "Billing", icon: Receipt },
@@ -22,13 +18,9 @@ const nav = [
 export function AppShell({ children }: { children: ReactNode }) {
   const session = useSession();
   const path = useRouterState({ select: (st) => st.location.pathname });
-  const settings = useLiveQuery(() => db.settings.get(1));
   // Settings stays reachable outside the gates: it is the recovery path
   // (owner PIN, restore backup, exports) and is owner-protected on its own.
   const recovery = path === "/settings";
-  // First run: a salon that has never completed setup must set a new owner
-  // PIN (and may remove the seeded demo data) before billing. Owner-only.
-  const needsSetup = !!settings && !settings.onboarded;
 
   useEffect(() => {
     // Re-attach this tab's session, seed local demo data, then bring up cloud
@@ -83,17 +75,9 @@ export function AppShell({ children }: { children: ReactNode }) {
       <main className="mx-auto max-w-[1400px] p-4 md:p-6">
         <DataWarnings />
         <BackupReminder />
-        {recovery ? (
-          children
-        ) : needsSetup ? (
-          <OwnerOnly>
-            <SetupScreen />
-          </OwnerOnly>
-        ) : (
-          <CloudGate>
-            <StaffGate>{children}</StaffGate>
-          </CloudGate>
-        )}
+        {/* The gate decides setup / connect / syncing FROM THE CLOUD (status
+            probe + first pull), never from the local seed — see SalonGate. */}
+        {recovery ? children : <SalonGate>{children}</SalonGate>}
       </main>
     </div>
   );

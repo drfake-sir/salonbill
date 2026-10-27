@@ -20,6 +20,7 @@ import { useOwner, useSession } from "@/lib/lock";
 import { ReceiptView } from "@/components/ReceiptView";
 import { PrintPortal } from "@/components/PrintPortal";
 import { PinPad } from "@/components/PinGate";
+import { SendBillDialog } from "@/components/SendBillDialog";
 
 export const Route = createFileRoute("/bills")({
   head: () => ({
@@ -50,21 +51,30 @@ function Bills() {
   const [printing, setPrinting] = useState<Bill | null>(null);
   // Bills whose line-by-line split-up is open.
   const [openId, setOpenId] = useState<number | null>(null);
+  // Bill waiting for a phone number in the in-app dialog (no phone → dialog,
+  // has a phone → "Change number" from the toast after sending).
+  const [dialogBill, setDialogBill] = useState<Bill | null>(null);
 
   const reprint = (b: Bill) => printBill(setPrinting, b);
 
   const share = async (b: Bill) => {
     if (!settings) return;
     if (!b.customerPhone) {
-      toast.error("This bill has no customer phone number");
+      // No number on the row → ask for it in-app instead of a dead-end toast.
+      setDialogBill(b);
       return;
     }
     try {
       const r = await shareBillPdf(b, settings, stylists);
-      if (r === "shared") toast.success("Bill PDF shared on WhatsApp");
+      if (r === "shared")
+        toast.success("Bill PDF shared on WhatsApp", {
+          duration: 8000,
+          action: { label: "Change number", onClick: () => setDialogBill(b) },
+        });
       else if (r === "downloaded")
         toast.info("Bill PDF saved — attach it in the customer's WhatsApp chat", {
-          duration: 6000,
+          duration: 8000,
+          action: { label: "Change number", onClick: () => setDialogBill(b) },
         });
     } catch (e) {
       console.error(e);
@@ -261,6 +271,14 @@ function Bills() {
           <ReceiptView bill={printing} settings={settings} stylists={stylists} />
         )}
       </PrintPortal>
+      {dialogBill && settings && (
+        <SendBillDialog
+          bill={dialogBill}
+          settings={settings}
+          stylists={stylists}
+          onClose={() => setDialogBill(null)}
+        />
+      )}
     </div>
   );
 }

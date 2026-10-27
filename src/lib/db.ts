@@ -1,6 +1,7 @@
 import Dexie, { type Table } from "dexie";
 import { takeBillNumberSeq, takeRowId, type LeasedTable } from "@/lib/lease";
 import { hashPin } from "@/lib/pins";
+import { SHOP_DEFAULTS } from "@/lib/shopDefaults";
 
 export type Category = { id?: number | undefined; name: string; order: number };
 export type Service = {
@@ -312,16 +313,12 @@ export function setOnRestored(fn: (() => void) | null) {
 
 export const defaultSettings: Settings = {
   id: 1,
-  salonName: "Glow Studio Unisex Salon",
-  address: "12, 2nd Avenue, Anna Nagar, Chennai 600040",
-  phone: "+91 98400 12345",
-  gstOn: true,
-  gstin: "33ABCDE1234F1Z5",
-  footer: "Thank you! Visit again ✨",
+  // The real shop's identity + receipt defaults live in one place only
+  // (src/lib/shopDefaults.ts). GST starts OFF with no GSTIN/review QR.
+  ...SHOP_DEFAULTS,
   paper: "80mm",
   autoPrint: false,
   ownerPin: "1234",
-  reviewUrl: "https://g.page/r/glowstudio/review",
   billSeq: 0,
   onboarded: false,
 };
@@ -504,25 +501,23 @@ const DEVICE_NAME_PROMPT =
   "Name this device (e.g. Counter, Owner phone) — shown on every bill it creates";
 
 /**
- * Ask the owner to name this device, and return the name to store.
+ * Normalize the owner's answer for this device's display name, and return the
+ * name to store.
  *
- * `window.prompt` is not available everywhere: some webviews and automation
- * contexts throw `prompt() is not supported` instead of returning null. It
- * used to be called unguarded inside connect(), which aborted the connection
- * after the sync token was saved but BEFORE the device was named — so the
- * device stayed unnamed forever and every bill it wrote exported as
- * "Unknown device".
+ * There is no `window.prompt` anywhere in this path: some webviews and
+ * automation contexts throw `prompt() is not supported`, and an unguarded
+ * prompt inside connect() used to abort AFTER the sync token was saved but
+ * BEFORE the device was named — leaving it permanently unnamed and every bill
+ * exporting as "Unknown device". The question is now asked by the in-app
+ * one-time dialog (SalonGate), which injects its answer through `ask`.
  *
- * The question is therefore best-effort: a thrown prompt, a dismissed
- * dialog, a non-string answer or a blank one all fall back to `suggested`, so
- * a name is always produced and connect() can never fail here.
- *
- * `ask` is injectable so the failure modes are testable without a dialog.
+ * The answer is best-effort: a thrown ask, a dismissed dialog, a non-string
+ * answer or a blank one all fall back to `suggested`, so a name is always
+ * produced and the caller can never fail here.
  */
 export function askDeviceName(
   suggested: string,
-  ask: (message: string, defaultValue: string) => string | null = (message, defaultValue) =>
-    window.prompt(message, defaultValue),
+  ask: (message: string, defaultValue: string) => string | null = () => null,
 ): string {
   let answer: unknown;
   try {

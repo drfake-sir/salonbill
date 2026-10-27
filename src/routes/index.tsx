@@ -1,11 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
   Search,
   Minus,
   Plus,
-  Trash2,
+  Check,
+  ChevronDown,
   Pause,
   Printer,
   Save,
@@ -35,6 +36,14 @@ import {
 } from "@/lib/db";
 import { computeTotals, inr } from "@/lib/billing";
 import { defaultStylistIdFor, stylistNameFor, unattributedServiceLines } from "@/lib/attribution";
+import {
+  applyServedBy,
+  isCustomStylist,
+  markStylistPick,
+  missingStylistMessage,
+  stylistForNewLine,
+  type CustomStylistKeys,
+} from "@/lib/servedBy";
 import { istIso } from "@/lib/earnings";
 import { printBill } from "@/lib/print";
 import { shareBillPdf } from "@/lib/pdf";
@@ -85,6 +94,18 @@ function Billing() {
   const [sheet, setSheet] = useState(false);
   const [saving, setSaving] = useState(false);
   const [orphans, setOrphans] = useState<Draft[]>([]);
+  /** "Served by" chip — one stylist for the whole bill (UI state only). */
+  const [servedBy, setServedBy] = useState<number | null>(null);
+  /** Lines whose stylist was picked individually — chips never clobber them. */
+  const [customStylists, setCustomStylists] = useState<CustomStylistKeys>(() => new Set<string>());
+  /** Discount / Tip start collapsed into one row; tap to expand. */
+  const [discOpen, setDiscOpen] = useState(false);
+  /** Which line's stylist CHIP menu is open (a small tap target, not a form). */
+  const [stylistFor, setStylistFor] = useState<string | null>(null);
+  /** Scroll shadows on the item list — on only when more lines are hidden. */
+  const [shadowTop, setShadowTop] = useState(false);
+  const [shadowBottom, setShadowBottom] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
 
   const tabId = useMemo(() => getTabId(), []);
   // Re-entrancy guard: a second tap (or F9 held down) while the first save is in
@@ -142,6 +163,7 @@ function Billing() {
   const add = (it: (typeof items)[number]) => {
     setLines((ls) => {
       const ex = ls.find((l) => l.kind === it.kind && l.refId === it.id);
+      // Same service tapped twice → quantity visibly goes up (easy to spot and undo).
       if (ex) return ls.map((l) => (l === ex ? { ...l, qty: l.qty + 1 } : l));
       return [
         ...ls,
@@ -154,13 +176,30 @@ function Billing() {
           qty: 1,
           gstRate: it.gst,
           commissionPct: it.com,
-          stylistId: it.kind === "service" ? defaultStylistId : undefined,
+          // A chosen "Served by" chip owns every new line on this bill.
+          stylistId:
+            it.kind === "service" ? stylistForNewLine(servedBy, defaultStylistId) : undefined,
         },
       ];
     });
   };
   const upd = (key: string, p: Partial<BillLine>) =>
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...p } : l)).filter((l) => l.qty > 0));
+  const removeLine = (key: string) => setLines((ls) => ls.filter((l) => l.key !== key));
+
+  /** Tap a chip → that stylist serves every non-customised line of the bill. */
+  const pickServedBy = (id: number) => {
+    setServedBy(id);
+    setLines((ls) => applyServedBy(ls, customStylists, id));
+  };
+
+  /** Keep the item-list scroll shadows in sync with the scroll position. */
+  const syncShadows = useCallback(() => {
+    const el = listRef.current;
+    if (!el) return;
+    setShadowTop(el.scrollTop > 2);
+    setShadowBottom(el.scrollTop + el.clientHeight < el.scrollHeight - 2);
+  }, []);
 
   const reset = () => {
     setLines([]);
@@ -171,6 +210,10 @@ function Billing() {
     setHeldId(undefined);
     setMode("Cash");
     setSheet(false);
+    // Next bill needs a conscious "Served by" choice — it affects pay.
+    setServedBy(null);
+    setCustomStylists(new Set<string>());
+    setDiscOpen(false);
     clearDraft(tabId).catch(() => {});
   };
 
@@ -247,12 +290,8 @@ function Billing() {
     // would silently vanish from someone's pay. The owner has no default.
     const unattributed = unattributedServiceLines(lines);
     if (unattributed.length) {
-      const first = unattributed[0]?.name;
-      toast.error(
-        unattributed.length === 1 && first
-          ? `Choose who did "${first}" before saving`
-          : `Choose a stylist for ${unattributed.length} service${unattributed.length === 1 ? "" : "s"} before saving`,
-      );
+      // The message points at "Served by" — the fastest fix on a phone.
+      toast.error(missingStylistMessage(unattributed.length, unattributed[0]?.name));
       return;
     }
     if (!settings) return;
@@ -347,6 +386,9 @@ function Billing() {
     // held UPI/Card/Wallet bill silently reverts the UI (and the saved bill)
     // to Cash.
     setMode(b.payments[0]?.mode ?? "Cash");
+    // This is a fresh bill as far as attribution goes.
+    setServedBy(null);
+    setCustomStylists(new Set<string>());
   };
 
   const resumeDraft = async (d: Draft) => {
@@ -365,6 +407,8 @@ function Billing() {
         : null,
     );
     setHeldId(d.heldId);
+    setServedBy(null);
+    setCustomStylists(new Set<string>());
     await deleteDraftById(d.id!);
     setOrphans((os) => os.filter((o) => o.id !== d.id));
     toast.success("Unsaved bill restored");
@@ -432,7 +476,10 @@ function Billing() {
         e.preventDefault();
         hold();
       }
-      if (e.key === "Escape" && sheet) setSheet(false);
+      if (e.key === "Escape") {
+        if (stylistFor) setStylistFor(null);
+        else if (sheet) setSheet(false);
+      }
     };
     window.addEventListener("keydown", k);
     return () => window.removeEventListener("keydown", k);
@@ -456,10 +503,19 @@ function Billing() {
       : [];
   const itemQty = lines.reduce((a, l) => a + l.qty, 0);
 
+  // Recompute the list shadows whenever the bill's contents change size or
+  // the sheet opens (the list only exists while the sheet is visible).
+  useEffect(() => {
+    syncShadows();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lines.length, sheet]);
   const panel = (
-    <div className="flex h-full min-h-0 flex-1 flex-col gap-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold">Current bill</h2>
+    <div className="flex h-full min-h-0 flex-1 flex-col gap-2">
+      <div className="flex shrink-0 items-center justify-between gap-2">
+        {/* One line: what this is + how many items, with Clear and close. */}
+        <h2 className="min-w-0 truncate text-lg font-bold">
+          Current bill - {itemQty} item{itemQty === 1 ? "" : "s"}
+        </h2>
         <div className="flex items-center gap-3">
           {lines.length > 0 && (
             <button
@@ -479,12 +535,39 @@ function Billing() {
         </div>
       </div>
 
+      {stylists.length > 0 && (
+        <div
+          role="group"
+          aria-label="Served by"
+          className="-mx-1 flex shrink-0 items-center gap-2 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          <span className="shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Served by
+          </span>
+          {stylists.map((s) => {
+            const active = s.id !== undefined && servedBy === s.id;
+            return (
+              <button
+                key={s.id}
+                onClick={() => s.id !== undefined && pickServedBy(s.id)}
+                aria-pressed={active}
+                title={`Every line served by ${s.name}`}
+                className={`tap min-h-11 shrink-0 rounded-full px-3 py-1.5 text-sm font-semibold ${
+                  active ? "bg-primary text-primary-foreground" : "bg-secondary"
+                }`}
+              >
+                {s.name}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       {cust ? (
-        <div className="flex items-center justify-between rounded-2xl bg-gold-soft px-4 py-3">
-          <div className="min-w-0">
-            <div className="truncate font-semibold">{cust.name}</div>
-            <div className="text-sm text-muted-foreground">{cust.phone}</div>
-          </div>
+        // One compact line: name, phone, remove (44px).
+        <div className="flex shrink-0 items-center gap-2 rounded-xl bg-gold-soft py-1 pl-3 pr-1">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold">{cust.name}</span>
+          <span className="shrink-0 text-sm text-muted-foreground">{cust.phone}</span>
           <button
             onClick={() => setCust(null)}
             aria-label="Remove customer"
@@ -494,13 +577,13 @@ function Billing() {
           </button>
         </div>
       ) : (
-        <div className="relative">
+        <div className="relative shrink-0">
           <input
             value={custQ}
             onChange={(e) => setCustQ(e.target.value)}
-            placeholder="Customer phone or name"
+            placeholder="Customer name or phone"
             inputMode={/^\d+$/.test(custQ) || custQ === "" ? "numeric" : "text"}
-            className="tap w-full rounded-2xl border border-input bg-card px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
+            className="tap w-full rounded-2xl border border-input bg-card px-4 py-2.5 outline-none focus:ring-2 focus:ring-ring"
           />
           {custQ.length >= 2 && (
             <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-2xl border bg-popover shadow-lift">
@@ -538,7 +621,7 @@ function Billing() {
       )}
 
       {(orphans.length > 0 || held.length > 0) && (
-        <div className="flex flex-wrap gap-2">
+        <div className="flex shrink-0 flex-wrap gap-2">
           {orphans.map((d) => (
             <button
               key={`d${d.id}`}
@@ -562,100 +645,210 @@ function Billing() {
         </div>
       )}
 
-      <div className="-mx-1 min-h-24 flex-1 space-y-2 overflow-y-auto overscroll-contain px-1">
-        {!lines.length && (
-          <div className="grid place-items-center rounded-2xl border border-dashed py-12 text-center text-muted-foreground">
-            <div className="mb-2 text-4xl">✂️</div>Tap a service to start
-          </div>
-        )}
-        {lines.map((l) => (
-          <div
-            key={l.key}
-            className="rounded-2xl border bg-card p-3 animate-in fade-in slide-in-from-right-2 duration-200"
-          >
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0 font-medium leading-tight">{l.name}</div>
-              <div className="shrink-0 font-semibold tabular-nums">{inr(l.price * l.qty)}</div>
+      <div className="relative flex min-h-24 min-w-0 flex-1 flex-col">
+        <div
+          ref={listRef}
+          onScroll={syncShadows}
+          className="-mx-1 min-h-24 flex-1 space-y-2 overflow-y-auto overscroll-contain px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        >
+          {!lines.length && (
+            <div className="grid place-items-center rounded-2xl border border-dashed py-12 text-center text-muted-foreground">
+              <div className="mb-2 text-4xl">✂️</div>Tap a service to start
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2">
-              {l.kind === "service" && (
-                <select
-                  value={l.stylistId ?? ""}
-                  onChange={(e) => upd(l.key, { stylistId: Number(e.target.value) || undefined })}
-                  className="h-11 min-w-24 flex-1 rounded-xl border border-input bg-secondary px-2 text-base"
-                >
-                  <option value="">No stylist</option>
-                  {stylists.map((s) => (
-                    <option key={s.id} value={s.id}>
-                      {s.name}
-                    </option>
-                  ))}
-                </select>
-              )}
-              {l.kind === "product" &&
-                (() => {
-                  const stock = products.find((p) => p.id === l.refId)?.stock ?? 0;
-                  return (
-                    <span
-                      className={`text-sm ${l.qty >= stock ? "font-semibold text-destructive" : "text-muted-foreground"}`}
-                    >
-                      {stock} in stock
+          )}
+          {lines.map((l) => (
+            <div
+              key={l.key}
+              className="rounded-2xl border bg-card p-2 animate-in fade-in slide-in-from-right-2 duration-200"
+            >
+              {/* Row 1 — service name and the line's price. */}
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-1.5">
+                  <span className="truncate font-medium leading-tight">{l.name}</span>
+                  {isCustomStylist(customStylists, l.key, servedBy) && (
+                    <span className="shrink-0 rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                      custom
                     </span>
-                  );
-                })()}
-              <div className="ml-auto flex items-center rounded-xl bg-secondary">
+                  )}
+                </div>
+                <span className="shrink-0 text-right tabular-nums">
+                  <span className="block text-base font-bold leading-tight">
+                    {inr(l.price * l.qty)}
+                  </span>
+                  {l.qty > 1 && (
+                    <span className="block text-[11px] text-muted-foreground">
+                      {inr(l.price)} × {l.qty}
+                    </span>
+                  )}
+                </span>
+              </div>
+              {/* Row 2 — stylist, quantity stepper, remove (all 44px targets). */}
+              <div className="mt-1 flex items-center gap-2">
+                {l.kind === "service" && (
+                  <div className="relative min-w-0">
+                    {/* Small tappable chip (not a form field): name + caret. */}
+                    <button
+                      onClick={() => setStylistFor(stylistFor === l.key ? null : l.key)}
+                      aria-label={`Stylist for ${l.name}`}
+                      aria-expanded={stylistFor === l.key}
+                      className="tap flex h-11 min-w-0 max-w-full items-center gap-1 rounded-xl bg-secondary px-3 text-sm font-semibold"
+                    >
+                      <span className="truncate">
+                        {stylists.find((s) => s.id === l.stylistId)?.name ?? "Stylist"}
+                      </span>
+                      <ChevronDown className="size-3.5 shrink-0 opacity-70" />
+                    </button>
+                    {stylistFor === l.key && (
+                      <div className="absolute left-0 top-full z-30 mt-1 w-44 overflow-hidden rounded-xl border border-border bg-popover shadow-lift">
+                        {[
+                          { id: undefined as number | undefined, name: "No stylist" },
+                          ...stylists.map((s) => ({ id: s.id, name: s.name })),
+                        ].map((opt) => (
+                          <button
+                            key={String(opt.id)}
+                            onClick={() => {
+                              const id = opt.id;
+                              upd(l.key, { stylistId: id });
+                              // An individual pick survives later chips and shows "custom".
+                              setCustomStylists((c) => markStylistPick(c, l.key, id, servedBy));
+                              setStylistFor(null);
+                            }}
+                            className="flex min-h-11 w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-secondary"
+                          >
+                            <span className="truncate">{opt.name}</span>
+                            {(opt.id ?? null) === (l.stylistId ?? null) && (
+                              <Check className="size-4 shrink-0 text-success" />
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+                {l.kind === "product" &&
+                  (() => {
+                    const stock = products.find((p) => p.id === l.refId)?.stock ?? 0;
+                    return (
+                      <span
+                        className={`min-w-0 flex-1 truncate text-sm ${
+                          l.qty >= stock
+                            ? "font-semibold text-destructive"
+                            : "text-muted-foreground"
+                        }`}
+                      >
+                        {stock} in stock
+                      </span>
+                    );
+                  })()}
+                <div className="ml-auto flex shrink-0 items-center rounded-xl bg-secondary">
+                  <button
+                    className="grid size-11 place-items-center"
+                    onClick={() => upd(l.key, { qty: l.qty - 1 })}
+                    aria-label="Less"
+                  >
+                    <Minus className="size-4" />
+                  </button>
+                  <span className="w-6 text-center font-semibold">{l.qty}</span>
+                  <button
+                    className="grid size-11 place-items-center"
+                    onClick={() => upd(l.key, { qty: l.qty + 1 })}
+                    aria-label="More"
+                  >
+                    <Plus className="size-4" />
+                  </button>
+                </div>
                 <button
-                  className="grid size-11 place-items-center"
-                  onClick={() => upd(l.key, { qty: l.qty - 1 })}
-                  aria-label="Less"
+                  onClick={() => removeLine(l.key)}
+                  aria-label={`Remove ${l.name}`}
+                  className="tap grid size-11 shrink-0 place-items-center rounded-xl bg-secondary text-destructive"
                 >
-                  {l.qty === 1 ? <Trash2 className="size-4" /> : <Minus className="size-4" />}
-                </button>
-                <span className="w-6 text-center font-semibold">{l.qty}</span>
-                <button
-                  className="grid size-11 place-items-center"
-                  onClick={() => upd(l.key, { qty: l.qty + 1 })}
-                  aria-label="More"
-                >
-                  <Plus className="size-4" />
+                  <X className="size-4" />
                 </button>
               </div>
             </div>
-          </div>
-        ))}
+          ))}
+        </div>
+        {/* Light edge shadows: visible only while lines are hidden by the scroll. */}
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-x-0 top-0 h-5 bg-gradient-to-b from-foreground/10 to-transparent transition-opacity ${
+            shadowTop ? "opacity-100" : "opacity-0"
+          }`}
+        />
+        <div
+          aria-hidden
+          className={`pointer-events-none absolute inset-x-0 bottom-0 h-5 bg-gradient-to-t from-foreground/10 to-transparent transition-opacity ${
+            shadowBottom ? "opacity-100" : "opacity-0"
+          }`}
+        />
       </div>
 
-      <div className="sticky bottom-0 z-10 shrink-0 space-y-3 border-t bg-card pt-4">
-        <div className="flex gap-2">
-          <div className="flex min-w-0 flex-1 items-center rounded-xl border border-input bg-card">
-            <input
-              type="number"
-              min={0}
-              inputMode="decimal"
-              value={disc || ""}
-              onChange={(e) => setDisc(Math.max(0, Number(e.target.value) || 0))}
-              placeholder="Discount"
-              className="h-11 w-full min-w-0 bg-transparent px-3 outline-none"
-            />
-            <button
-              onClick={() => setDiscType(discType === "pct" ? "flat" : "pct")}
-              className="h-11 min-w-11 shrink-0 rounded-r-xl bg-secondary px-3 font-semibold"
-            >
-              {discType === "pct" ? "%" : "₹"}
-            </button>
-          </div>
-          <input
-            type="number"
-            min={0}
-            inputMode="decimal"
-            value={tip || ""}
-            onChange={(e) => setTip(Math.max(0, Number(e.target.value) || 0))}
-            placeholder="Tip ₹"
-            className="h-11 w-24 shrink-0 rounded-xl border border-input bg-card px-3 outline-none"
-          />
+      {/* space-y-2 / pt-3 (was space-y-3 / pt-4): at 390×844 the footer must
+          leave room for at least three full service lines above it. */}
+      <div className="sticky bottom-0 z-10 shrink-0 space-y-2 border-t bg-card pt-3">
+        {/* Discount / Tip collapsed into one row; tap to expand the inputs. */}
+        <div>
+          <button
+            onClick={() => setDiscOpen((o) => !o)}
+            aria-expanded={discOpen}
+            aria-label="Discount / Tip"
+            className="tap flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-input bg-card px-3 text-sm"
+          >
+            <span className="shrink-0 font-semibold">Discount / Tip</span>
+            <span className="truncate text-muted-foreground">
+              {[
+                disc > 0 ? `Discount ${discType === "pct" ? `−${disc}%` : `−${inr(disc)}`}` : "",
+                tip > 0 ? `Tip ${inr(tip)}` : "",
+              ]
+                .filter(Boolean)
+                .join(" · ") || "Add"}
+            </span>
+          </button>
+          {discOpen && (
+            <div className="mt-2 flex items-end gap-2">
+              <div className="min-w-0 flex-1">
+                <span className="mb-1 block text-xs font-semibold text-muted-foreground">
+                  Discount
+                </span>
+                <div className="flex min-w-0 items-center rounded-xl border border-input bg-card">
+                  <input
+                    type="number"
+                    min={0}
+                    inputMode="decimal"
+                    value={disc || ""}
+                    onChange={(e) => setDisc(Math.max(0, Number(e.target.value) || 0))}
+                    aria-label="Discount"
+                    autoFocus
+                    className="h-11 w-full min-w-0 bg-transparent px-3 outline-none"
+                  />
+                  <button
+                    onClick={() => setDiscType(discType === "pct" ? "flat" : "pct")}
+                    aria-label={discType === "pct" ? "Percent" : "Rupees"}
+                    className="h-11 min-w-11 shrink-0 rounded-r-xl bg-secondary px-3 font-semibold"
+                  >
+                    {discType === "pct" ? "%" : "₹"}
+                  </button>
+                </div>
+              </div>
+              <div className="w-24 shrink-0">
+                <span className="mb-1 block text-xs font-semibold text-muted-foreground">
+                  Tip (Rs)
+                </span>
+                <input
+                  type="number"
+                  min={0}
+                  inputMode="decimal"
+                  value={tip || ""}
+                  onChange={(e) => setTip(Math.max(0, Number(e.target.value) || 0))}
+                  aria-label="Tip (Rs)"
+                  className="h-11 w-full rounded-xl border border-input bg-card px-3 outline-none"
+                />
+              </div>
+            </div>
+          )}
         </div>
         <div className="space-y-1 text-sm">
-          <Row k="Subtotal" v={inr(totals.subtotal)} />
+          {totals.subtotal > 0 && <Row k="Subtotal" v={inr(totals.subtotal)} />}
           {totals.discount > 0 && <Row k="Discount" v={`−${inr(totals.discount)}`} />}
           {settings?.gstOn && (
             <>
@@ -669,24 +862,34 @@ function Billing() {
           <span className="text-muted-foreground">Total</span>
           <span className="text-3xl font-extrabold tabular-nums">{inr(totals.total)}</span>
         </div>
-        <div className="grid grid-cols-4 gap-2">
-          {MODES.map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`tap rounded-xl py-2 text-sm font-semibold ${mode === m ? "bg-primary text-primary-foreground" : "bg-secondary"}`}
-            >
-              {m}
-            </button>
-          ))}
+        <div>
+          <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+            Payment
+          </span>
+          <div className="grid grid-cols-4 gap-2">
+            {MODES.map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                aria-pressed={mode === m}
+                className={`tap flex items-center justify-center gap-1 rounded-xl py-2 text-sm font-semibold ${
+                  mode === m ? "bg-primary text-primary-foreground shadow-soft" : "bg-secondary"
+                }`}
+              >
+                {mode === m && <Check className="size-4 shrink-0" />}
+                {m}
+              </button>
+            ))}
+          </div>
         </div>
         <div className="flex gap-2">
           <button
             onClick={hold}
             title="Hold (F8)"
-            className="tap grid w-14 shrink-0 place-items-center rounded-2xl bg-secondary"
+            className="tap flex shrink-0 flex-col items-center justify-center gap-0.5 rounded-2xl bg-secondary px-3 text-xs font-semibold"
           >
             <Pause className="size-5" />
+            Hold
           </button>
           <button
             onClick={() => save("save")}
@@ -811,13 +1014,15 @@ function Billing() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="absolute inset-x-0 bottom-0 flex max-h-[85dvh] flex-col rounded-t-3xl bg-card p-5 pb-[calc(1.25rem+env(safe-area-inset-bottom))] animate-in slide-in-from-bottom duration-200"
+            className="absolute inset-x-0 bottom-0 flex max-h-[92dvh] flex-col rounded-t-3xl bg-card p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] animate-in slide-in-from-bottom duration-200"
           >
-            <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-border lg:hidden" />
+            <div className="mx-auto mb-2 h-1.5 w-12 rounded-full bg-border lg:hidden" />
             {/* Scroll the whole panel when it is taller than the sheet (short
                 phones, landscape, keyboard open) so the action footer can stay
-                pinned and reachable instead of hanging below the viewport. */}
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain">
+                pinned and reachable instead of hanging below the viewport.
+                overflow-x-hidden keeps the -mx-1 gutters from forcing a 17px
+                horizontal scrollbar that would eat vertical space. */}
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain overflow-x-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {panel}
             </div>
           </div>

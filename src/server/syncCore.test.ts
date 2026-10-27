@@ -97,6 +97,112 @@ describe("auth", () => {
     expect((await runAuth(store, { token })).ok).toBe(true);
     expect(await store.getCounter("auth_attempts")).toBe(0);
   });
+
+  /* ------------- status probe (connect-screen wording signal) ----------- */
+
+  it("status probe: no PIN/token answers salonPinSet with zero side effects", async () => {
+    // Empty cloud: the probe says "not configured" and never bootstraps one.
+    const store = createMemoryStore();
+    const empty = await runAuth(store, {});
+    expect(empty.ok).toBe(false);
+    expect(empty.salonPinSet).toBe(false);
+    expect(empty.token).toBeUndefined();
+    expect(await store.getAuth()).toBeNull(); // nothing adopted
+    expect(await store.getCounter("auth_attempts")).toBe(0); // nothing counted
+
+    // Configured cloud: the probe says only "configured" — never whether any
+    // PIN it could type is correct, and it never returns a token.
+    await runAuth(store, { pin: "482917" });
+    const probe = await runAuth(store, {});
+    expect(probe.ok).toBe(false);
+    expect(probe.salonPinSet).toBe(true);
+    expect(probe.token).toBeUndefined();
+    expect(await store.getCounter("auth_attempts")).toBe(0);
+
+    // The same optional signal rides along on ordinary auth responses.
+    expect((await runAuth(store, { pin: "482917" })).salonPinSet).toBe(true);
+    expect((await runAuth(store, { pin: "999999" })).salonPinSet).toBe(true);
+  });
+
+  it("status probes never feed the lockout — but the lockout itself is untouched", async () => {
+    const { store } = await setupSalon();
+    // A reload-heavy page probing 10 times must not count as attempts.
+    for (let i = 0; i < 10; i++) {
+      const p = await runAuth(store, {});
+      expect(p.ok).toBe(false);
+      expect(p.salonPinSet).toBe(true);
+    }
+    expect(await store.getCounter("auth_attempts")).toBe(0);
+    expect(await store.getCounter("auth_lock_until")).toBe(0);
+
+    // The real wrong-PIN lockout still trips after exactly 5 attempts.
+    for (let i = 0; i < 4; i++) {
+      expect((await runAuth(store, { pin: `99999${i}` })).error).toBe("Wrong PIN");
+    }
+    const fifth = await runAuth(store, { pin: "999999" });
+    expect(fifth.error).toMatch(/locked/i);
+
+    // A probe neither unlocks nor extends the lock — it still answers the
+    // wording question while locked, and the correct PIN stays refused.
+    const whileLocked = await runAuth(store, {});
+    expect(whileLocked.salonPinSet).toBe(true);
+    expect(await store.getCounter("auth_lock_until")).toBeGreaterThan(0);
+    expect((await runAuth(store, { pin: "482917" })).ok).toBe(false);
+  });
+});
+
+describe("first sync never overwrites the cloud's owner PIN hash or onboarded flag", () => {
+  it("another device's first sync inserts-if-absent and pulls the cloud's settings back", async () => {
+    const { store, token } = await setupSalon();
+    // The salon's real settings, published by device 1 after setup.
+    const real = {
+      id: 1,
+      salonName: "Glow Studio",
+      ownerPin: "p1$100000$8$1$aaaaaaaa$bbbbbbbb",
+      onboarded: true,
+    };
+    await runSync(
+      store,
+      req({
+        token,
+        firstSync: true,
+        push: [{ t: "settings", id: 1, op: "put", data: real }],
+      }),
+    );
+
+    // Device 2 joins with its LOCAL SEED settings (default hash, not onboarded).
+    const seed = {
+      id: 1,
+      salonName: "Seed Salon",
+      ownerPin: "p1$100000$8$1$cccccccc$dddddddd",
+      onboarded: false,
+    };
+    const r = await runSync(
+      store,
+      req({
+        deviceId: DEV(2),
+        token,
+        firstSync: true,
+        push: [{ t: "settings", id: 1, op: "put", data: seed }],
+      }),
+    );
+    expect(r.ok).toBe(true);
+
+    // The cloud keeps ITS owner PIN hash and onboarded flag — the seed lost.
+    const rows = (await store.rowsSince(0, 50)).filter((x) => x.t === "settings");
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]!.data!)).toMatchObject({
+      ownerPin: real.ownerPin,
+      onboarded: true,
+      salonName: "Glow Studio",
+    });
+    // …and the very same response hands device 2 the cloud's row, so the
+    // device converges to the salon instead of overwriting it.
+    expect(r.pull.find((x) => x.t === "settings")?.data).toMatchObject({
+      ownerPin: real.ownerPin,
+      onboarded: true,
+    });
+  });
 });
 
 describe("push/pull", () => {

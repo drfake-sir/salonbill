@@ -14,13 +14,10 @@
 
 import {
   db,
-  askDeviceName,
   runWithoutEnqueue,
   setOnRestored,
   SYNCED_TABLES,
   localMaxId,
-  getDeviceName,
-  setDeviceName,
   type SyncQueueItem,
 } from "./db";
 import {
@@ -95,6 +92,9 @@ export type SyncStatus = {
   needsPin: boolean;
   lastSyncAt: number | null;
   error: string | null;
+  /** true once this device's first full cloud copy exists (mirrors
+   *  isFirstSyncDone(), kept reactive so gates re-render when it flips). */
+  firstSyncDone: boolean;
 };
 
 const persistedLastSync = () => {
@@ -107,6 +107,10 @@ let status: SyncStatus = {
   needsPin: false,
   lastSyncAt: persistedLastSync(),
   error: null,
+  // Read the persisted flag directly (isFirstSyncDone is declared below): a
+  // reload of an already-synced device must open straight into the app even
+  // when it is offline — no false "first copy still uploading" state.
+  firstSyncDone: ls.get(LS.synced) === "1",
 };
 const listeners = new Set<() => void>();
 
@@ -221,17 +225,12 @@ export async function connect(pin?: string): Promise<{ ok: boolean; error?: stri
     if (res.token) ls.set(LS.token, res.token);
     // Latch: from now on this device may bill offline without hitting the gate.
     ls.set(LS.ever, "1");
-    // Name this device the first time it joins, so bills can say WHICH phone
-    // or tablet wrote them. Asked once, then never again.
-    if (!getDeviceName()) {
-      // Name this device the first time it joins, so bills can say WHICH
-      // phone or tablet wrote them. Asked once, then never again — and asked
-      // through askDeviceName(), which cannot throw: this runs AFTER the token
-      // is stored, so an error here would leave the device permanently
-      // unnamed and every bill stamped "Unknown device".
-      setDeviceName(askDeviceName(`Device ${getDeviceId().slice(-4)}`));
-    }
-    setStatus({ needsPin: false });
+    // Connecting never names the device and never signs anyone in: the device
+    // name is asked afterwards through the in-app one-time dialog (SalonGate),
+    // and an owner session can only come from the owner PIN or from finishing
+    // setup on the first device — connecting lands on the locked picker.
+    cachedStatus = { ok: true, salonPinSet: true }; // the PIN we just used exists
+    setStatus({ needsPin: false, firstSyncDone: isFirstSyncDone() });
     await syncNow({ forceFirst: true });
     return { ok: true };
   } catch (e) {
@@ -247,7 +246,60 @@ export function disconnect() {
   ls.del(LS.cursor);
   ls.del(LS.synced);
   ls.del(LS.last);
-  setStatus({ phase: "disabled", needsPin: false, lastSyncAt: null, error: null });
+  resetCloudStatus(); // this device must re-probe the cloud's status
+  setStatus({
+    phase: "disabled",
+    needsPin: false,
+    lastSyncAt: null,
+    error: null,
+    firstSyncDone: false,
+  });
+}
+
+/* ----------------------------- cloud status ------------------------------ */
+
+/** Result of the side-effect-free status probe (see fetchCloudStatus). */
+export type CloudStatus = { ok: true; salonPinSet: boolean } | { ok: false; error: string };
+
+let cachedStatus: CloudStatus | null = null;
+
+/**
+ * Ask the cloud — WITHOUT a PIN or token — whether a salon is already
+ * configured there. The server answers from its own record (the optional
+ * `salonPinSet` field on the auth response), so this learns only
+ * "configured or not": it never carries a PIN, never counts as an attempt
+ * against the lockout, and says nothing about whether any PIN is correct.
+ *
+ * The answer decides connect-screen wording ("Enter your salon PIN" vs
+ * "Create a salon PIN (first device only)"), never whether setup is offered:
+ * setup additionally requires an empty local seed AND a successful probe.
+ * Successful answers are cached per device; errors are not (retry on the
+ * next mount / online event), and an old server that sends no field reads as
+ * "unknown" rather than guessing.
+ */
+export async function fetchCloudStatus(opts?: { force?: boolean }): Promise<CloudStatus> {
+  if (!opts?.force && cachedStatus) return cachedStatus;
+  try {
+    const res = await syncAuthFn({ data: {} });
+    if (typeof res.salonPinSet !== "boolean") {
+      return { ok: false, error: res.error ?? "Could not reach the salon cloud" };
+    }
+    cachedStatus = { ok: true, salonPinSet: res.salonPinSet };
+    return cachedStatus;
+  } catch (e) {
+    console.error("cloud status probe failed", e);
+    return { ok: false, error: friendlySyncError(e) };
+  }
+}
+
+/** Synchronous cache read for components that can't await (the sync sheet). */
+export function getCachedCloudStatus(): { salonPinSet: boolean } | null {
+  return cachedStatus && cachedStatus.ok ? { salonPinSet: cachedStatus.salonPinSet } : null;
+}
+
+/** Drop the cached probe (disconnect / tests) so the next gate re-probes. */
+export function resetCloudStatus() {
+  cachedStatus = null;
 }
 
 /* ------------------------------ push / pull -------------------------------- */
@@ -274,7 +326,7 @@ export async function syncNow(opts?: { forceFirst?: boolean }): Promise<void> {
     }
     const at = Date.now();
     ls.set(LS.last, String(at));
-    setStatus({ phase: "online", lastSyncAt: at, error: null });
+    setStatus({ phase: "online", lastSyncAt: at, error: null, firstSyncDone: isFirstSyncDone() });
   } catch (e) {
     // A sync failure must never be mistaken for a lost session: the token
     // stays, the queue keeps its rows, and billing continues offline.

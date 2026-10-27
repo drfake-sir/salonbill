@@ -21,7 +21,13 @@ describe("bill sheet fits short viewports (360x640, landscape, keyboard-open)", 
   });
 
   it("keeps the Hold/Save/Print footer pinned inside the sheet", () => {
-    expect(src).toMatch(/sticky bottom-0 z-10 shrink-0 space-y-3 border-t bg-card pt-4/);
+    expect(src).toMatch(/sticky bottom-0 z-10 shrink-0 space-y-2 border-t bg-card pt-3/);
+  });
+
+  it("footer spacing leaves room for 3 full service lines at 390×844", () => {
+    // Tight gaps keep the sticky footer ≤ ~265px so three 90px line cards fit
+    // above it (measured in the live browser matrix).
+    expect(src).not.toMatch(/sticky bottom-0 z-10 shrink-0 space-y-3/);
   });
 
   it("never lets the line-items box collapse to zero height", () => {
@@ -74,6 +80,65 @@ describe("touch targets are at least 44px", () => {
   it("sync sheet: close button is a 44px target", () => {
     expect(syncGate).toMatch(/aria-label="Close sync sheet"/);
     expect(syncGate).toMatch(/grid size-11 shrink-0 place-items-center rounded-full/);
+  });
+});
+
+describe("sync status line is part of the layout — it can never cover a control", () => {
+  const gate = read("components/SyncGate.tsx");
+  const shell = read("components/AppShell.tsx");
+
+  it("AppShell renders the pill in normal flow, above <main>", () => {
+    const at = shell.indexOf("<SyncPill />");
+    expect(at).toBeGreaterThan(-1);
+    // Before <main> in the DOM and inside the page div — not in a fixed layer.
+    expect(at).toBeLessThan(shell.indexOf("<main"));
+    expect(shell).not.toMatch(/<div[^>]*\b(fixed|absolute)\b[^>]*>\s*<SyncPill/);
+  });
+
+  it("the status-line button itself uses static flow positioning only", () => {
+    const at = gate.indexOf('data-testid="sync-status-line"');
+    expect(at).toBeGreaterThan(-1);
+    const win = gate.slice(at, at + 500);
+    const cls = /className="([^"]*)"/.exec(win)?.[1] ?? "";
+    expect(cls).toContain("w-full"); // full-width in-flow bar
+    expect(cls).toContain("border-b"); // visually a header line
+    // A fixed/absolute/sticky pill is exactly the bug this rule forbids.
+    expect(cls).not.toMatch(/\b(fixed|absolute|sticky)\b/);
+  });
+
+  it("the SyncPill component body contains no floating positioning at all", () => {
+    const start = gate.indexOf("export function SyncPill");
+    const end = gate.indexOf("export function DataWarnings");
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const body = gate.slice(start, end);
+    expect(body).not.toMatch(/className="[^"]*\b(fixed|absolute)\b/);
+    expect(body).not.toMatch(/position:\s*(fixed|absolute)/);
+  });
+
+  it("phones show the short text; details open on tap", () => {
+    const start = gate.indexOf("export function SyncPill");
+    const end = gate.indexOf("export function DataWarnings");
+    const body = gate.slice(start, end);
+    // Short form hides on md+, full line with last-sync time only shows there.
+    expect(body).toMatch(/truncate md:hidden/);
+    expect(body).toMatch(/hidden truncate md:inline/);
+    // Tap opens the details sheet.
+    expect(body).toMatch(/onClick=\{\(\) => setOpen\(true\)\}/);
+    expect(body).toMatch(/Cloud sync — tap for details/);
+  });
+
+  it("offline / not-connected states stay clearly visible", () => {
+    const start = gate.indexOf("export function SyncPill");
+    const end = gate.indexOf("export function DataWarnings");
+    const body = gate.slice(start, end);
+    // Non-online states get the destructive colour + explicit text.
+    expect(body).toMatch(/text-destructive/);
+    expect(body).toContain('"Offline"');
+    expect(body).toContain('"Not connected"');
+    expect(body).toMatch(/Offline · \$\{waiting} waiting/);
+    // The stale-queue warning strip is still rendered in the page flow too.
+    expect(gate).toMatch(/unsynced changes sitting on this device/);
   });
 });
 

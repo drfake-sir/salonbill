@@ -40,9 +40,10 @@ export function ReceiptView({
       <style>{`@page { size: ${w} auto; margin: 0 }`}</style>
       <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: "1.35em", fontWeight: 800 }}>{r.salonName}</div>
-        <div>{r.address}</div>
+        {/* Empty lines (address, GSTIN, review QR, footer) are never printed. */}
+        {r.address && <div>{r.address}</div>}
         <div>Ph: {r.phone}</div>
-        {r.gstOn && <div>GSTIN: {r.gstin}</div>}
+        {r.gstOn && r.gstin && <div>GSTIN: {r.gstin}</div>}
       </div>
       <hr style={{ borderTop: "1px dashed #000", margin: "6px 0" }} />
       <div className={row}>
@@ -116,7 +117,7 @@ export function ReceiptView({
           <div>Review us on Google</div>
         </div>
       )}
-      <div style={{ textAlign: "center", marginTop: 4 }}>{r.footer}</div>
+      {r.footer && <div style={{ textAlign: "center", marginTop: 4 }}>{r.footer}</div>}
     </div>
   );
 }

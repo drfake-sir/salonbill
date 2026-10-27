@@ -135,7 +135,7 @@ function invoiceHtml(bill: Bill, stylists: Stylist[], qrDataUrl: string | null):
         <div style="font-size:12px;color:${MUTED};margin-bottom:10px;">Scan to review us on Google</div>`
             : ""
         }
-        <div style="font-size:15px;font-weight:700;color:${INK};">${esc(r?.footer ?? "Thank you! Visit again 🌸")}</div>
+        ${r?.footer ? `<div style="font-size:15px;font-weight:700;color:${INK};">${esc(r.footer)}</div>` : ""}
       </div>
     </div>
   </div>`;

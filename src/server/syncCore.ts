@@ -84,7 +84,20 @@ export type AuthRequest = {
    */
   verifyOnly?: boolean | undefined;
 };
-export type AuthResponse = { ok: boolean; token?: string | undefined; error?: string | undefined };
+export type AuthResponse = {
+  ok: boolean;
+  token?: string | undefined;
+  error?: string | undefined;
+  /**
+   * Status signal (optional): is a salon PIN already configured on this
+   * cloud? Returned on every auth response — most importantly on the
+   * side-effect-free probe below — so a fresh device can pick its connect
+   * screen wording ("Enter your salon PIN" vs "Create a salon PIN (first
+   * device only)") without ever learning whether a PIN it types is correct.
+   * Optional: older clients ignore it.
+   */
+  salonPinSet?: boolean | undefined;
+};
 
 export type AuthRecord = { salt: string; hash: string };
 
@@ -152,6 +165,17 @@ const isIntId = (n: unknown): n is number => typeof n === "number" && Number.isI
 export async function runAuth(store: SyncStore, req: AuthRequest): Promise<AuthResponse> {
   const existing = await store.getAuth();
   const pin = (req.pin ?? "").trim();
+  const salonPinSet = !!existing;
+
+  // Status probe: a fresh device asking ONLY whether this cloud has a salon
+  // PIN yet (it drives the connect screen's wording). No PIN, no token, no
+  // verifyOnly — so no side effect of any kind: it runs before the lockout
+  // check, never counts as a failed attempt (a reload-heavy page can't lock
+  // the salon out), never adopts or rotates a PIN, and reveals nothing but
+  // "configured or not" — never whether any PIN is correct.
+  if (!pin && !req.token && !req.verifyOnly) {
+    return { ok: false, error: pinError, salonPinSet };
+  }
 
   // Locked out? Enforced server-side so a client can't reset the counter.
   const lockedUntil = await store.getCounter(AUTH_LOCK_KEY);
@@ -160,6 +184,7 @@ export async function runAuth(store: SyncStore, req: AuthRequest): Promise<AuthR
     return {
       ok: false,
       error: `Too many wrong PIN attempts — try again in ${mins} minute${mins === 1 ? "" : "s"}`,
+      salonPinSet,
     };
   }
 
@@ -181,12 +206,16 @@ export async function runAuth(store: SyncStore, req: AuthRequest): Promise<AuthR
   // Recovery check: pure verification of an already-configured salon PIN.
   if (req.verifyOnly) {
     if (!existing)
-      return { ok: false, error: "Salon cloud PIN is not set yet — connect a device first" };
+      return {
+        ok: false,
+        error: "Salon cloud PIN is not set yet — connect a device first",
+        salonPinSet: false,
+      };
     if (PIN_RE.test(pin) && (await hashToken(pin, existing.salt)) === existing.hash) {
       await recordSuccess();
-      return { ok: true, token: existing.hash };
+      return { ok: true, token: existing.hash, salonPinSet: true };
     }
-    return { ok: false, error: await recordFailure() };
+    return { ok: false, error: await recordFailure(), salonPinSet: true };
   }
 
   if (!existing) {
@@ -195,7 +224,7 @@ export async function runAuth(store: SyncStore, req: AuthRequest): Promise<AuthR
     const hash = await hashToken(pin, salt);
     await store.setAuth({ salt, hash });
     await recordSuccess();
-    return { ok: true, token: hash };
+    return { ok: true, token: hash, salonPinSet: true };
   }
   if (req.token && req.token === existing.hash) {
     // A PIN supplied alongside a valid token is a deliberate rotation.
@@ -208,7 +237,7 @@ export async function runAuth(store: SyncStore, req: AuthRequest): Promise<AuthR
       }
     }
     await recordSuccess();
-    return { ok: true, token: existing.hash };
+    return { ok: true, token: existing.hash, salonPinSet: true };
   }
   // Fresh setup attempt on an already-configured server: only valid if the
   // caller still knows a valid token (rotation). Otherwise plain PIN check.
@@ -216,10 +245,10 @@ export async function runAuth(store: SyncStore, req: AuthRequest): Promise<AuthR
     const hash = await hashToken(pin, existing.salt);
     if (hash === existing.hash) {
       await recordSuccess();
-      return { ok: true, token: hash };
+      return { ok: true, token: hash, salonPinSet: true };
     }
   }
-  return { ok: false, error: await recordFailure() };
+  return { ok: false, error: await recordFailure(), salonPinSet: true };
 }
 
 const cleanPush = (push: PushItem[] | undefined): PushItem[] => {
