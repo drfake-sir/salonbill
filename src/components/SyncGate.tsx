@@ -28,6 +28,7 @@ import {
   type SyncStatus,
 } from "@/lib/syncClient";
 import { isPrivateBrowsing } from "@/lib/pwa";
+import { PersonChip } from "./PersonChip";
 import { StaffGate } from "./StaffGate";
 import { SetupScreen } from "./SetupScreen";
 
@@ -102,27 +103,31 @@ export function SyncPill() {
     <>
       {/* Part of the normal page flow (NOT floating): a full-width status
           line can never sit on top of a control on any route or overlay —
-          overlays keep their own z-indexes above it. */}
-      <button
-        data-testid="sync-status-line"
-        onClick={() => setOpen(true)}
-        title={s.error ?? "Cloud sync — tap for details"}
-        className="tap flex w-full items-center gap-2 border-b border-border/60 bg-card px-4 text-left text-sm font-semibold md:px-6"
-      >
-        {syncing ? (
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" />
-        ) : (
-          <span
-            aria-hidden
-            className={`size-2.5 shrink-0 rounded-full ${
-              online ? "bg-success" : connected ? "bg-destructive" : "bg-muted-foreground"
-            }`}
-          />
-        )}
-        {/* Phones: short text. Desktop: the full line with last-sync time. */}
-        <span className={`truncate md:hidden ${stateText}`}>{short}</span>
-        <span className={`hidden truncate md:inline ${stateText}`}>{full}</span>
-      </button>
+          overlays keep their own z-indexes above it. The person chip shares
+          this same bar on the left; both are ordinary flow children. */}
+      <div className="flex w-full items-stretch border-b border-border/60 bg-card">
+        <PersonChip />
+        <button
+          data-testid="sync-status-line"
+          onClick={() => setOpen(true)}
+          title={s.error ?? "Cloud sync — tap for details"}
+          className="tap flex w-full min-w-0 flex-1 items-center gap-2 border-b border-border/60 px-4 py-2 text-left text-sm font-semibold md:px-6"
+        >
+          {syncing ? (
+            <Loader2 className="size-3.5 shrink-0 animate-spin text-accent" />
+          ) : (
+            <span
+              aria-hidden
+              className={`size-2.5 shrink-0 rounded-full ${
+                online ? "bg-success" : connected ? "bg-destructive" : "bg-muted-foreground"
+              }`}
+            />
+          )}
+          {/* Phones: short text. Desktop: the full line with last-sync time. */}
+          <span className={`truncate md:hidden ${stateText}`}>{short}</span>
+          <span className={`hidden truncate md:inline ${stateText}`}>{full}</span>
+        </button>
+      </div>
       {open && <ConnectSheet onClose={() => setOpen(false)} />}
     </>
   );
@@ -404,6 +409,22 @@ function DeviceNameDialog({ suggested, onDone }: { suggested: string; onDone: ()
           placeholder={suggested}
           className="tap mt-4 w-full rounded-xl border border-input bg-card px-4 py-3 outline-none focus:ring-2 focus:ring-ring"
         />
+        {/* Two one-tap suggestions — the two names a salon actually uses. */}
+        <div className="mt-2 flex flex-wrap gap-2">
+          {["Counter", "Owner phone"].map((s) => (
+            <button
+              key={s}
+              onClick={() => setValue(s)}
+              className={`tap rounded-full border px-3 py-1.5 text-sm font-semibold ${
+                value === s
+                  ? "border-accent bg-accent-soft text-accent-foreground"
+                  : "border-border bg-secondary"
+              }`}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
         <div className="mt-4 space-y-2">
           <button
             onClick={() => save(value)}

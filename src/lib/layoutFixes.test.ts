@@ -65,10 +65,10 @@ describe("touch targets are at least 44px", () => {
     // The two interactive month buttons (not the decorative icon span) must
     // be 44x44.
     expect(bills).toMatch(
-      /className="tap grid size-11 place-items-center rounded-xl bg-secondary"\s*aria-label="Previous month"/,
+      /className="tap grid size-11 shrink-0 place-items-center rounded-xl bg-secondary"\s*aria-label="Previous month"/,
     );
     expect(bills).toMatch(
-      /className="tap grid size-11 place-items-center rounded-xl bg-secondary disabled:opacity-40"\s*aria-label="Next month"/,
+      /className="tap grid size-11 shrink-0 place-items-center rounded-xl bg-secondary disabled:opacity-40"\s*aria-label="Next month"/,
     );
     expect(bills).not.toMatch(/tap grid size-9 place-items-center/);
   });

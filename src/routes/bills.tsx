@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
   BarChart3,
@@ -16,11 +16,12 @@ import { db, cancelBill, deviceLabel, type Bill } from "@/lib/db";
 import { inr } from "@/lib/billing";
 import { shareBillPdf } from "@/lib/pdf";
 import { printBill } from "@/lib/print";
-import { useOwner, useSession } from "@/lib/lock";
+import { setSession, useOwner, useSession } from "@/lib/lock";
 import { ReceiptView } from "@/components/ReceiptView";
 import { PrintPortal } from "@/components/PrintPortal";
 import { PinPad } from "@/components/PinGate";
 import { SendBillDialog } from "@/components/SendBillDialog";
+import { servedByLabel } from "@/lib/servedBy";
 
 export const Route = createFileRoute("/bills")({
   head: () => ({
@@ -232,6 +233,11 @@ function Bills() {
                   </div>
                   <div className="mt-3 rounded-xl bg-secondary p-3 text-muted-foreground">
                     <div>
+                      <span className="font-semibold text-foreground">Customer</span> ·{" "}
+                      {b.customerName ?? "Walk-in"}
+                      {b.customerPhone ? ` · ${b.customerPhone}` : ""}
+                    </div>
+                    <div>
                       <span className="font-semibold text-foreground">Paid</span> ·{" "}
                       {b.payments.map((p) => `${p.mode} ${inr(p.amount)}`).join(" + ")}
                     </div>
@@ -244,8 +250,14 @@ function Bills() {
                     </div>
                     {b.cashierName && (
                       <div>
-                        <span className="font-semibold text-foreground">Cashier</span> ·{" "}
+                        <span className="font-semibold text-foreground">Billed by</span> ·{" "}
                         {b.cashierName}
+                      </div>
+                    )}
+                    {servedByLabel(b.lines) && (
+                      <div>
+                        <span className="font-semibold text-foreground">Served by</span> ·{" "}
+                        {servedByLabel(b.lines)}
                       </div>
                     )}
                     <div>
@@ -288,11 +300,58 @@ function Bills() {
  * by service — plus discounts, GST, tips and cancellations. Staff see a
  * locked card (owner PIN required), matching the owner-only rules for
  * exports and bill cancellation.
+ *
+ * The header row is ONE toggle button: tap opens, tap again closes, whether
+ * locked or unlocked (the old code force-opened the PIN pad on every tap,
+ * which is why the second tap appeared to do nothing). While locked the
+ * header carries no amount and no count — the owner-only figure never sits
+ * in the DOM for a staff member to read.
  */
-function MonthlyTotals({ owner, bills }: { owner: boolean; bills: Bill[] }) {
+export function MonthlyTotals({ owner, bills }: { owner: boolean; bills: Bill[] }) {
   const [open, setOpen] = useState(false);
   const [showPin, setShowPin] = useState(false);
+  // Bumped on every close so the pad remounts with cleared digits.
+  const [pinKey, setPinKey] = useState(0);
   const [offset, setOffset] = useState(0); // 0 = current month
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const padRef = useRef<HTMLDivElement | null>(null);
+  const headerRef = useRef<HTMLButtonElement | null>(null);
+
+  const close = () => {
+    setOpen(false);
+    setShowPin(false);
+    setPinKey((k) => k + 1);
+  };
+  const toggle = () => {
+    if (open) close();
+    else {
+      setOpen(true);
+      setShowPin(!owner); // locked → the pad comes up straight away
+    }
+  };
+
+  // Escape closes the panel — locked or unlocked.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  // Tapping outside the PIN pad closes it while it is locked. The header is
+  // excluded: it is a toggle, and closing it in two places would reopen it.
+  useEffect(() => {
+    if (!open || owner) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (padRef.current?.contains(t) || headerRef.current?.contains(t)) return;
+      close();
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [open, owner]);
 
   const now = new Date();
   const cursor = new Date(now.getFullYear(), now.getMonth() - offset, 1);
@@ -330,64 +389,79 @@ function MonthlyTotals({ owner, bills }: { owner: boolean; bills: Bill[] }) {
   );
 
   return (
-    <div className="mb-6 overflow-hidden rounded-3xl bg-card shadow-soft">
+    <div ref={cardRef} className="mb-6 overflow-hidden rounded-3xl bg-card shadow-soft">
       <button
-        onClick={() => {
-          if (owner) setOpen((o) => !o);
-          else {
-            setShowPin(true);
-            setOpen(true);
-          }
-        }}
-        className="tap flex w-full items-center gap-3 px-5 py-4 text-left"
+        ref={headerRef}
+        onClick={toggle}
+        className="tap flex min-h-11 w-full items-center gap-3 px-5 py-3 text-left"
         aria-expanded={open}
+        aria-controls="monthly-totals-panel"
+        data-testid="monthly-totals-header"
       >
         <span className="grid size-9 place-items-center rounded-xl bg-accent-soft text-accent-foreground">
           <BarChart3 className="size-5" />
         </span>
         <span className="flex-1">
           <span className="block font-bold">Monthly totals</span>
-          <span className="block text-sm text-muted-foreground">
-            {label} · {inr(paidTotal)} across {paid.length} bills
-          </span>
+          {owner ? (
+            <span className="block text-sm text-muted-foreground">
+              {label} · {inr(paidTotal)} across {paid.length} bills
+            </span>
+          ) : (
+            <span className="flex items-center gap-1 text-sm text-muted-foreground">
+              <Lock className="size-3.5" /> Owner only
+            </span>
+          )}
         </span>
-        {!owner && (
-          <span className="flex items-center gap-1 rounded-full bg-secondary px-3 py-1 text-xs font-semibold text-muted-foreground">
-            <Lock className="size-3.5" /> Owner only
-          </span>
-        )}
         <ChevronDown
           className={`size-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`}
         />
       </button>
 
       {open && !owner && (
-        <div className="border-t px-5 pb-5 pt-4">
+        <div ref={padRef} id="monthly-totals-panel" className="border-t px-5 pb-5 pt-4">
           <p className="mb-3 text-sm text-muted-foreground">
             Unlock with the owner PIN to view monthly totals.
           </p>
-          {showPin && <PinPad onOk={() => setShowPin(false)} />}
+          {showPin && <PinPad key={pinKey} onOk={() => setShowPin(false)} />}
+          <button
+            onClick={close}
+            className="tap mt-3 inline-flex h-11 items-center justify-center rounded-xl bg-secondary px-4 text-sm font-semibold"
+            data-testid="monthly-totals-close"
+          >
+            Close
+          </button>
         </div>
       )}
 
       {open && owner && (
-        <div className="space-y-4 border-t px-5 pb-5 pt-4">
-          <div className="flex items-center justify-between">
+        <div id="monthly-totals-panel" className="space-y-4 border-t px-5 pb-5 pt-4">
+          <div className="flex items-center gap-2">
             <button
               onClick={() => setOffset((o) => o + 1)}
-              className="tap grid size-11 place-items-center rounded-xl bg-secondary"
+              className="tap grid size-11 shrink-0 place-items-center rounded-xl bg-secondary"
               aria-label="Previous month"
             >
               <ChevronLeft className="size-4" />
             </button>
-            <span className="font-bold">{label}</span>
+            <span className="min-w-0 flex-1 truncate text-center font-bold">{label}</span>
             <button
               onClick={() => setOffset((o) => Math.max(0, o - 1))}
               disabled={offset === 0}
-              className="tap grid size-11 place-items-center rounded-xl bg-secondary disabled:opacity-40"
+              className="tap grid size-11 shrink-0 place-items-center rounded-xl bg-secondary disabled:opacity-40"
               aria-label="Next month"
             >
               <ChevronRight className="size-4" />
+            </button>
+            <button
+              onClick={() => {
+                close();
+                setSession(null); // end the owner session → figures lock again
+              }}
+              className="tap inline-flex h-11 items-center justify-center gap-1 rounded-xl bg-secondary px-3 text-sm font-semibold"
+              data-testid="monthly-totals-lock"
+            >
+              <Lock className="size-4" /> Lock
             </button>
           </div>
 

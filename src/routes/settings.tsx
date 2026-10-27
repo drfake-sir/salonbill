@@ -23,7 +23,8 @@ import {
   type Bill,
   type Settings,
 } from "@/lib/db";
-import { removeDemoData } from "@/lib/demoData";
+import { restoreReport, restoreStarterCatalog } from "@/lib/demoData";
+import { DemoCleanup } from "@/components/DemoCleanup";
 import { printBill } from "@/lib/print";
 import { OwnerOnly } from "@/components/PinGate";
 import { ReceiptView } from "@/components/ReceiptView";
@@ -272,6 +273,7 @@ function SettingsPage() {
 
         <CloudBackupCard />
         <DemoDataCard />
+        <RestoreStarterCard />
         <BackupHygieneCard onRestoreFile={restore} fileRef={fileRef} />
         <DeviceNameCard />
         <DataSafetyCard />
@@ -314,57 +316,65 @@ function SettingsPage() {
 /* ----------------------------- demo data --------------------------------- */
 
 /**
- * One-step removal of the seeded demo staff/services/customers. Same flow as
- * the first-run setup screen: automatic local backup first, refused when any
- * real bill exists, explicit confirmation, deletions sync as tombstones.
+ * Demo/starter cleanup: three separate, unticked-by-default actions in one
+ * card (see `DemoCleanup`), each with its own confirmation, an automatic
+ * local backup first and the real-bills refusal. Deletions sync as tombstones.
  */
 function DemoDataCard() {
+  return (
+    <section className="rounded-3xl bg-card p-5 shadow-soft">
+      <h2 className="mb-1 font-bold">Demo data</h2>
+      <p className="mb-3 text-sm text-muted-foreground">
+        New salons start with demo staff (Karthik, Priya, Arun, Divya), starter services and
+        products, and fake customers. Nothing is removed unless you tick its box and confirm.
+      </p>
+      <DemoCleanup />
+    </section>
+  );
+}
+
+/**
+ * Owner-only rescue for the starter price list: adds back exactly the starter
+ * rows that are MISSING (matched by name, ignoring case and spaces) and never
+ * edits, re-prices or deletes anything that exists.
+ */
+function RestoreStarterCard() {
   const [busy, setBusy] = useState(false);
   const run = async () => {
     if (busy) return;
+    const ok = window.confirm(
+      "Restore the starter catalog?\n\n" +
+        "Every starter category, service, product and stylist that is MISSING is added back. " +
+        "Nothing that already exists is renamed, re-priced or deleted, and saved bills are " +
+        "untouched.\n\nRestored stylists have no PIN until you set one under Staff & PINs.",
+    );
+    if (!ok) return;
     setBusy(true);
     try {
-      const r = await removeDemoData();
-      if (r.ok) {
-        await logAudit(
-          "demo.remove",
-          `${r.removed.stylists.length} staff, ${r.removed.services.length} services, ` +
-            `${r.removed.customers.length} customers`,
-        );
-        toast.success(
-          "Demo data removed · " +
-            `${r.removed.stylists.length} staff, ${r.removed.services.length} services, ` +
-            `${r.removed.customers.length} customers — backup downloaded first`,
-        );
-      } else if (r.reason === "real-bills") {
-        toast.error("This salon has real bills — demo data was NOT removed.");
-      } else if (r.reason === "backup-failed") {
-        toast.error("Could not save a safety backup — nothing was removed.");
-      } else if (r.reason === "no-demo") {
-        toast.info("No demo data found on this device.");
-      }
-      // "declined" → the owner cancelled the confirmation, stay silent
+      const report = restoreReport(await restoreStarterCatalog());
+      await logAudit("catalog.restore", report);
+      toast.success(report);
     } catch (e) {
-      console.error(e);
-      toast.error("Could not remove demo data — nothing was changed.");
+      console.error("restore starter catalog failed", e);
+      toast.error("Could not restore the starter catalog — please try again");
     } finally {
       setBusy(false);
     }
   };
   return (
-    <section className="rounded-3xl bg-card p-5 shadow-soft">
-      <h2 className="mb-1 font-bold">Demo data</h2>
+    <section className="rounded-3xl bg-card p-5 shadow-soft" data-testid="restore-starter">
+      <h2 className="mb-1 font-bold">Restore starter catalog</h2>
       <p className="mb-3 text-sm text-muted-foreground">
-        New salons start with demo staff (Karthik, Priya, Arun, Divya), demo services and demo
-        customers. Remove them in one step once you've added your own — a local backup is downloaded
-        first, and removal is refused if any real bill exists.
+        Deleted or renamed part of the starter price list? This adds back only what is missing,
+        matched by name — “arun” counts as “Arun”. Existing rows are never edited and bills are
+        never touched. Running it twice adds nothing the second time.
       </p>
       <button
         onClick={() => void run()}
         disabled={busy}
-        className="tap rounded-xl bg-secondary px-5 py-2.5 font-semibold disabled:opacity-60"
+        className="tap rounded-xl bg-accent px-5 py-2.5 font-semibold text-accent-foreground disabled:opacity-60"
       >
-        {busy ? "Removing…" : "Remove demo data"}
+        {busy ? "Restoring…" : "Restore starter catalog"}
       </button>
     </section>
   );

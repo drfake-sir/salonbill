@@ -13,6 +13,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Checkbox } from "@/components/ui/checkbox";
+import { bulkProblem, planBulk, type BulkMode } from "@/lib/bulkPrice";
 
 export const Route = createFileRoute("/catalog")({
   head: () => ({
@@ -34,34 +36,60 @@ export const Route = createFileRoute("/catalog")({
 
 const input =
   "h-11 min-w-0 rounded-xl border border-input bg-card px-3 outline-none focus:ring-2 focus:ring-ring";
-const btn = "tap shrink-0 rounded-xl bg-secondary px-3 text-sm font-semibold";
-const btnAccent =
-  "tap shrink-0 rounded-xl bg-accent px-3 text-sm font-semibold text-accent-foreground";
-const btnDanger =
-  "tap shrink-0 rounded-xl bg-destructive/10 px-3 text-sm font-semibold text-destructive";
+
+/**
+ * Every button in a row: exactly 44px tall, label centred horizontally and
+ * vertically, never wrapping and never clipped — so Disable / Delete /
+ * Earnings can never differ in height or shape (an <a> used to sit taller
+ * than the <button>s next to it).
+ */
+const btnCls =
+  "tap inline-flex h-11 shrink-0 items-center justify-center whitespace-nowrap rounded-xl px-3 text-sm font-semibold";
+const btn = `${btnCls} bg-secondary`;
+const btnAccent = `${btnCls} bg-accent text-accent-foreground`;
+const btnDanger = `${btnCls} bg-destructive/10 text-destructive`;
+
+/**
+ * ONE grid template per list, shared verbatim by the title row and every data
+ * row, with fixed tracks for everything but the name — so a caption like
+ * "used in 3 bills" (which used to sit inside the button row) can never push
+ * the price/duration boxes sideways or away from their titles.
+ *
+ * Grid only at lg (1024px) and up: below that the side rail plus the fixed
+ * tracks leaves the name column too narrow to be usable, so rows fall back to
+ * the card layout (name → caption → labelled fields side by side → one button
+ * row) where the per-field labels label themselves and no title row renders.
+ */
 const colTpl = {
-  services: "sm:grid-cols-[minmax(0,1fr)_6rem_6rem_auto]",
-  products: "sm:grid-cols-[minmax(0,1fr)_6rem_5rem_6.5rem_auto]",
-  stylists: "sm:grid-cols-[minmax(0,1fr)_7.5rem_5.5rem_auto]",
+  services: "lg:grid-cols-[minmax(0,1fr)_6rem_7.5rem_5.5rem_5.5rem_7.5rem]",
+  products: "lg:grid-cols-[minmax(0,1fr)_6rem_5rem_6.5rem_5.5rem_5.5rem_7.5rem]",
+  stylists: "lg:grid-cols-[minmax(0,1fr)_7.5rem_6rem_5.5rem_5.5rem_6rem_7.5rem]",
 } as const;
 const headCls =
-  "hidden gap-2 border-b border-border/60 px-1 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:grid";
+  "hidden gap-2 border-b border-border/60 px-1 pb-2 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground lg:grid";
+/** Titles must never wrap ("Commission %" stays on one line). */
+const headCell = "whitespace-nowrap";
 
-/** One labelled field: the label is VISIBLE on phones (hidden on wide rows,
- *  where the column header above labels the same box) and always present for
- *  assistive tech / tests via aria-label on the input. */
+/** One labelled field: the label is VISIBLE below lg (where rows are cards
+ *  and label themselves) and always present for assistive tech / tests via
+ *  aria-label on the input. Add forms pass `always` — their labels show at
+ *  every width, because there is no title row to take over. */
 function Field({
   label,
   children,
   className = "",
+  always = false,
 }: {
   label: string;
   children: ReactNode;
   className?: string;
+  always?: boolean;
 }) {
   return (
     <label className={`block min-w-0 ${className}`}>
-      <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground sm:hidden">
+      <span
+        className={`mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground ${always ? "" : "lg:hidden"}`}
+      >
         {label}
       </span>
       {children}
@@ -69,31 +97,48 @@ function Field({
   );
 }
 
-/** Per-card auto-save status: "Saving…" → "Saved ✓" → fades out (~2s). */
+/** Debounce for field edits: one write ~600ms after typing stops. */
+const AUTO_SAVE_MS = 600;
+
+/** Per-card auto-save status: "Saving…" → "Saved ✓" → fades out (~2s).
+ * The slot is ALWAYS rendered at a fixed width (text-right), so the status
+ * can never move or resize the name box next to it while it changes.
+ */
 function SaveStatus({ status }: { status: "saving" | "saved" | "fading" | "idle" }) {
-  if (status === "idle") return null;
+  const idle = status === "idle";
   return (
     <span
       data-testid="save-status"
       aria-live="polite"
-      className={`shrink-0 text-xs font-semibold transition-opacity duration-500 ${
-        status === "saving" ? "text-muted-foreground" : "text-success"
+      className={`w-16 shrink-0 text-right text-xs font-semibold transition-opacity duration-500 ${
+        status === "saving" || idle ? "text-muted-foreground" : "text-success"
       } ${status === "fading" ? "opacity-0" : "opacity-100"}`}
     >
-      {status === "saving" ? "Saving…" : "Saved ✓"}
+      {idle ? "" : status === "saving" ? "Saving…" : "Saved ✓"}
     </span>
   );
 }
 
-/** Wraps one auto-save write with the card's Saving/Saved/error cycle. */
+/**
+ * Wraps one auto-save write with the card's Saving/Saved/error cycle, plus
+ * `schedule()` — the debounce every field edit goes through.
+ *
+ * Rules it enforces: one write ~AUTO_SAVE_MS after typing stops (never per
+ * keystroke, never two writes for one burst), and callers skip scheduling
+ * entirely when the value is unchanged, so focus/blur without an edit stays
+ * write-free.
+ */
 function useCardSave() {
   const [status, setStatus] = useState<"saving" | "saved" | "fading" | "idle">("idle");
   const t1 = useRef<number | undefined>(undefined);
   const t2 = useRef<number | undefined>(undefined);
+  const timers = useRef(new Map<string, number>());
   useEffect(
     () => () => {
       clearTimeout(t1.current);
       clearTimeout(t2.current);
+      for (const t of timers.current.values()) clearTimeout(t);
+      timers.current.clear();
     },
     [],
   );
@@ -112,7 +157,19 @@ function useCardSave() {
       toast.error("Could not save — please try again");
     }
   };
-  return { status, run };
+  /** Debounced edit: `AUTO_SAVE_MS` after the last keystroke, exactly one write. */
+  const schedule = (key: string, job: () => Promise<unknown>) => {
+    const prev = timers.current.get(key);
+    if (prev !== undefined) clearTimeout(prev);
+    timers.current.set(
+      key,
+      window.setTimeout(() => {
+        timers.current.delete(key);
+        void run(job);
+      }, AUTO_SAVE_MS),
+    );
+  };
+  return { status, run, schedule };
 }
 
 /* ------------------------------ add forms -------------------------------- */
@@ -202,10 +259,28 @@ function AddForm({
 
   const label =
     kind === "service" ? "Service name" : kind === "product" ? "Product name" : "Stylist name";
+  // Short reason shown next to Save while it is disabled.
+  const reason = !name.trim()
+    ? "Enter a name"
+    : kind === "service"
+      ? numVal(price) === null
+        ? "Enter a price"
+        : numVal(duration) === null
+          ? "Enter a duration"
+          : ""
+      : kind === "product"
+        ? numVal(price) === null
+          ? "Enter a price"
+          : numVal(stock, { int: true }) === null || numVal(low, { int: true }) === null
+            ? "Enter stock numbers"
+            : ""
+        : numVal(commission) === null || Number(commission) > 100
+          ? "Commission must be 0–100%"
+          : "";
   return (
     <div className="mt-3 rounded-2xl border border-dashed border-border bg-secondary/40 p-3">
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        <Field label={label}>
+        <Field label={label} always>
           <input
             value={name}
             onChange={(e) => setName(e.target.value)}
@@ -216,10 +291,11 @@ function AddForm({
           />
         </Field>
         {kind !== "stylist" ? (
-          <Field label="Price (₹)">
+          <Field label="Price (₹)" always>
             <input
               type="number"
               min={0}
+              step="any"
               inputMode="decimal"
               value={price}
               onChange={(e) => setPrice(e.target.value)}
@@ -230,7 +306,7 @@ function AddForm({
           </Field>
         ) : null}
         {kind === "service" && (
-          <Field label="Duration (min)">
+          <Field label="Duration (min)" always>
             <input
               type="number"
               min={0}
@@ -245,7 +321,7 @@ function AddForm({
         )}
         {kind === "product" && (
           <>
-            <Field label="Stock">
+            <Field label="Stock" always>
               <input
                 type="number"
                 min={0}
@@ -257,7 +333,7 @@ function AddForm({
                 className={`${input} w-full`}
               />
             </Field>
-            <Field label="Low-stock alert">
+            <Field label="Low-stock alert" always>
               <input
                 type="number"
                 min={0}
@@ -273,7 +349,7 @@ function AddForm({
         )}
         {kind === "stylist" && (
           <>
-            <Field label="Phone (optional)">
+            <Field label="Phone (optional)" always>
               <input
                 inputMode="tel"
                 value={phone}
@@ -283,7 +359,7 @@ function AddForm({
                 className={`${input} w-full`}
               />
             </Field>
-            <Field label="Commission %">
+            <Field label="Commission %" always>
               <input
                 type="number"
                 min={0}
@@ -299,7 +375,15 @@ function AddForm({
           </>
         )}
       </div>
-      <div className="mt-3 flex flex-wrap justify-end gap-2">
+      <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+        {reason && (
+          <span
+            data-testid="add-reason"
+            className="mr-auto text-xs font-medium text-muted-foreground"
+          >
+            {reason}
+          </span>
+        )}
         <button onClick={onDone} className={btn}>
           Cancel
         </button>
@@ -394,9 +478,220 @@ function DeleteDialog({
   );
 }
 
+/* ------------------------------ bulk price ------------------------------- */
+
+/**
+ * Re-price a whole category. The preview IS the computation: what you see in
+ * the list (`Men's Haircut 300 → 330`) is exactly what `apply` writes, one
+ * `db.services.update()` per row, so the normal updating hooks enqueue every
+ * change for sync. Bills are never touched — their lines keep the price
+ * snapshot taken when they were saved.
+ */
+function BulkPriceDialog({
+  categoryId,
+  categoryName,
+  services,
+  onClose,
+}: {
+  categoryId: number;
+  categoryName: string;
+  services: Service[];
+  onClose: () => void;
+}) {
+  const [dir, setDir] = useState<"up" | "down">("up");
+  const [unit, setUnit] = useState<"pct" | "inr">("pct");
+  const [amount, setAmount] = useState("");
+  const [rounding, setRounding] = useState<1 | 5>(1);
+  const [includeDisabled, setIncludeDisabled] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const parsed = Number(amount);
+  const mode: BulkMode = {
+    dir,
+    unit,
+    amount: amount.trim() !== "" && Number.isFinite(parsed) ? parsed : 0,
+    rounding,
+    includeDisabled,
+  };
+  const plan = planBulk(
+    services.map((s) => ({ id: s.id!, name: s.name, price: s.price, active: s.active })),
+    mode,
+  );
+  const problem = bulkProblem(mode, plan);
+  const skipped =
+    services.length - services.filter((s) => includeDisabled || s.active !== false).length;
+
+  const apply = async () => {
+    if (problem || busy) return;
+    setBusy(true);
+    try {
+      for (const l of plan) await db.services.update(l.id, { price: l.to });
+      await logAudit(
+        "service.bulk",
+        `${categoryName}: ${dir === "up" ? "+" : "−"}${amount}${unit === "pct" ? "%" : "₹"} → ${plan.length} prices (nearest ₹${rounding})`,
+      );
+      toast.success(`Updated ${plan.length} prices`);
+      onClose();
+    } catch (e) {
+      console.error("bulk price failed", e);
+      toast.error("Could not update the prices — please try again");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const seg = (active: boolean) =>
+    `tap inline-flex h-11 flex-1 items-center justify-center whitespace-nowrap rounded-xl px-3 text-sm font-semibold ${
+      active ? "bg-primary text-primary-foreground" : "bg-secondary"
+    }`;
+
+  return (
+    <Dialog open onOpenChange={(o) => !o && onClose()}>
+      <DialogContent className="max-h-[90dvh] max-w-[calc(100vw-2rem)] overflow-y-auto sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Bulk price — {categoryName}</DialogTitle>
+          <DialogDescription>
+            Increase or decrease every price in this category. Nothing is written until you tap
+            Apply, and saved bills keep the prices they were billed at.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setDir("up")}
+              aria-pressed={dir === "up"}
+              className={seg(dir === "up")}
+            >
+              Increase
+            </button>
+            <button
+              onClick={() => setDir("down")}
+              aria-pressed={dir === "down"}
+              className={seg(dir === "down")}
+            >
+              Decrease
+            </button>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => setUnit("pct")}
+              aria-pressed={unit === "pct"}
+              className={seg(unit === "pct")}
+            >
+              %
+            </button>
+            <button
+              onClick={() => setUnit("inr")}
+              aria-pressed={unit === "inr"}
+              className={seg(unit === "inr")}
+            >
+              ₹
+            </button>
+          </div>
+
+          <label className="block">
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              {unit === "pct" ? "Percent" : "Amount (₹)"}
+            </span>
+            <input
+              type="number"
+              min={0}
+              step="any"
+              inputMode="decimal"
+              value={amount}
+              onChange={(e) => setAmount(e.target.value)}
+              aria-label={unit === "pct" ? "Percent" : "Amount (₹)"}
+              placeholder={unit === "pct" ? "e.g. 10" : "e.g. 20"}
+              autoFocus
+              className={`${input} w-full`}
+            />
+          </label>
+
+          <div>
+            <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              Rounding
+            </span>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setRounding(1)}
+                aria-pressed={rounding === 1}
+                className={seg(rounding === 1)}
+              >
+                Nearest ₹1
+              </button>
+              <button
+                onClick={() => setRounding(5)}
+                aria-pressed={rounding === 5}
+                className={seg(rounding === 5)}
+              >
+                Nearest ₹5
+              </button>
+            </div>
+          </div>
+
+          <label className="flex cursor-pointer items-center gap-2.5 text-sm">
+            <Checkbox
+              checked={includeDisabled}
+              onCheckedChange={(v) => setIncludeDisabled(v === true)}
+              aria-label="Include disabled services"
+              className="size-5"
+            />
+            Include disabled services ({services.filter((s) => s.active === false).length})
+          </label>
+
+          <div className="rounded-2xl bg-secondary p-3">
+            <div className="mb-1.5 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+              Preview · {plan.length} service{plan.length === 1 ? "" : "s"}
+            </div>
+            {plan.length ? (
+              <ul data-testid="bulk-preview" className="max-h-40 space-y-1 overflow-y-auto text-sm">
+                {plan.map((l) => (
+                  <li key={l.id} className="flex items-center justify-between gap-3">
+                    <span className="min-w-0 truncate">{l.name}</span>
+                    <span className="shrink-0 tabular-nums">
+                      {l.from} → {l.to}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-sm text-muted-foreground">Nothing to change yet.</p>
+            )}
+            {skipped > 0 && !includeDisabled && (
+              <p className="mt-1.5 text-xs text-muted-foreground">
+                {skipped} disabled service{skipped === 1 ? "" : "s"} skipped
+              </p>
+            )}
+          </div>
+
+          {problem && (
+            <p data-testid="bulk-problem" className="text-sm font-medium text-destructive">
+              {problem}
+            </p>
+          )}
+        </div>
+
+        <DialogFooter className="gap-2 sm:justify-end">
+          <button onClick={onClose} className={btn}>
+            Cancel
+          </button>
+          <button
+            onClick={() => void apply()}
+            disabled={!!problem || busy}
+            className={`${btnAccent} disabled:opacity-60`}
+          >
+            {busy ? "Applying…" : `Apply to ${plan.length} service${plan.length === 1 ? "" : "s"}`}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 /* --------------------------------- rows ---------------------------------- */
 
-function ServiceRow({
+export function ServiceRow({
   s,
   usedCount,
   onDeleteClick,
@@ -405,47 +700,67 @@ function ServiceRow({
   usedCount: number;
   onDeleteClick: () => void;
 }) {
-  const { status, run } = useCardSave();
-  const setPrice = async (price: number) => {
-    if (price === s.price) return;
-    if (!Number.isFinite(price) || price < 0) {
-      toast.error("Price must be zero or more");
-      return;
-    }
-    await run(async () => {
-      await db.services.update(s.id!, { price });
-      await logAudit("service.price", `${s.name}: ${s.price} → ${price}`);
-    });
-  };
+  const { status, run, schedule } = useCardSave();
+  // Controlled price box: typing never fights the stored value, while a price
+  // changed SOMEWHERE ELSE (bulk price dialog, another device's sync) is
+  // adopted immediately — the old `defaultValue` input kept showing the price
+  // from page load until a full reload.
+  const [priceText, setPriceText] = useState(() => String(s.price));
+  const [prevPrice, setPrevPrice] = useState(s.price);
+  if (prevPrice !== s.price) {
+    setPrevPrice(s.price);
+    if (priceText === String(prevPrice)) setPriceText(String(s.price));
+  }
   return (
     <div
-      className={`grid grid-cols-1 gap-2 border-b border-border/50 px-1 py-3 last:border-0 sm:items-center sm:gap-2 sm:py-2 ${colTpl.services} ${s.active ? "" : "opacity-60"}`}
+      className={`grid grid-cols-1 gap-2 border-b border-border/50 px-1 py-3 last:border-0 lg:items-center lg:gap-2 lg:py-2 ${colTpl.services} ${s.active ? "" : "opacity-60"}`}
     >
-      <div className="flex min-w-0 items-center gap-2">
+      {/* 1 — name: first row of the card, first track of the grid */}
+      <div className="order-1 flex min-w-0 items-center gap-2 lg:order-none">
         <input
           defaultValue={s.name}
           aria-label="Service name"
+          onChange={(e) => {
+            const v = e.target.value.trim();
+            if (v && v !== s.name) schedule("name", () => db.services.update(s.id!, { name: v }));
+          }}
           onBlur={(e) => {
             const v = e.target.value.trim();
-            if (!v) {
-              e.currentTarget.value = s.name; // blank names never stick
-              return;
-            }
-            if (v !== s.name) void run(() => db.services.update(s.id!, { name: v }));
+            if (!v) e.currentTarget.value = s.name; // blank names never stick
           }}
           className={`${input} min-w-0 flex-1`}
         />
         <SaveStatus status={status} />
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:contents">
+      {/* 3 — labelled fields: side by side on cards, one fixed track each at lg */}
+      <div className="order-3 grid grid-cols-2 gap-2 lg:order-none lg:contents">
         <Field label="Price (₹)">
           <input
             type="number"
             min={0}
+            step="any"
             inputMode="decimal"
-            defaultValue={s.price}
+            value={priceText}
             aria-label="Price (₹)"
-            onBlur={(e) => void setPrice(Number(e.target.value))}
+            placeholder="0"
+            onChange={(e) => {
+              const raw = e.target.value;
+              setPriceText(raw);
+              const v = Number(raw);
+              if (raw === "" || !Number.isFinite(v) || v < 0) return; // wait for a valid value
+              if (v === s.price) return; // unchanged → no write
+              schedule("price", async () => {
+                await db.services.update(s.id!, { price: v });
+                await logAudit("service.price", `${s.name}: ${s.price} → ${v}`);
+              });
+            }}
+            onBlur={() => {
+              const v = Number(priceText);
+              if (priceText.trim() === "" || !Number.isFinite(v) || v < 0) {
+                setPriceText(String(s.price)); // never leave an invalid box
+                toast.error("Price must be zero or more");
+              }
+            }}
             className={`${input} w-full`}
           />
         </Field>
@@ -454,17 +769,26 @@ function ServiceRow({
             type="number"
             min={0}
             inputMode="numeric"
-            defaultValue={s.duration}
+            defaultValue={s.duration > 0 ? s.duration : ""}
             aria-label="Duration (min)"
+            placeholder="min"
+            onChange={(e) => {
+              const raw = e.target.value;
+              const n = raw === "" ? 0 : Number(raw);
+              if (!Number.isFinite(n) || n < 0) return;
+              if (n === s.duration) return; // unchanged → no write
+              schedule("duration", () => db.services.update(s.id!, { duration: n }));
+            }}
             onBlur={(e) => {
-              const v = Math.max(0, Number(e.target.value));
-              if (Number.isFinite(v)) void run(() => db.services.update(s.id!, { duration: v }));
+              const n = Number(e.target.value || 0);
+              if (!Number.isFinite(n) || n < 0) e.currentTarget.value = String(s.duration);
             }}
             className={`${input} w-full`}
           />
         </Field>
       </div>
-      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+      {/* 4 — one button row on cards, one fixed track each at lg */}
+      <div className="order-4 flex items-center gap-2 lg:order-none lg:contents">
         <button
           onClick={() => void run(() => db.services.update(s.id!, { active: !s.active }))}
           className={btn}
@@ -474,12 +798,13 @@ function ServiceRow({
         <button onClick={onDeleteClick} className={btnDanger}>
           Delete
         </button>
-        {usedCount > 0 && (
-          <span className="w-full text-[11px] text-muted-foreground sm:w-auto">
-            used in {usedCount} bill{usedCount === 1 ? "" : "s"}
-          </span>
-        )}
       </div>
+      {/* 2 — caption under the name on cards, its own fixed track at lg */}
+      {usedCount > 0 && (
+        <span className="order-2 text-[11px] text-muted-foreground lg:order-none">
+          used in {usedCount} bill{usedCount === 1 ? "" : "s"}
+        </span>
+      )}
     </div>
   );
 }
@@ -493,40 +818,58 @@ function ProductRow({
   usedCount: number;
   onDeleteClick: () => void;
 }) {
-  const { status, run } = useCardSave();
+  const { status, run, schedule } = useCardSave();
+  // Same external-change adoption as the service row — see the price box note.
+  const [priceText, setPriceText] = useState(() => String(p.price));
+  const [prevPrice, setPrevPrice] = useState(p.price);
+  if (prevPrice !== p.price) {
+    setPrevPrice(p.price);
+    if (priceText === String(prevPrice)) setPriceText(String(p.price));
+  }
   return (
     <div
-      className={`grid grid-cols-1 gap-2 border-b border-border/50 px-1 py-3 last:border-0 sm:items-center sm:gap-2 sm:py-2 ${colTpl.products} ${p.active ? "" : "opacity-60"}`}
+      className={`grid grid-cols-1 gap-2 border-b border-border/50 px-1 py-3 last:border-0 lg:items-center lg:gap-2 lg:py-2 ${colTpl.products} ${p.active ? "" : "opacity-60"}`}
     >
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="order-1 flex min-w-0 items-center gap-2 lg:order-none">
         <input
           defaultValue={p.name}
           aria-label="Product name"
+          onChange={(e) => {
+            const v = e.target.value.trim();
+            if (v && v !== p.name) schedule("name", () => db.products.update(p.id!, { name: v }));
+          }}
           onBlur={(e) => {
             const v = e.target.value.trim();
-            if (!v) {
-              e.currentTarget.value = p.name;
-              return;
-            }
-            if (v !== p.name) void run(() => db.products.update(p.id!, { name: v }));
+            if (!v) e.currentTarget.value = p.name;
           }}
           className={`${input} min-w-0 flex-1`}
         />
         <SaveStatus status={status} />
       </div>
-      <div className="grid grid-cols-3 gap-1.5 sm:contents">
+      <div className="order-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:order-none lg:contents">
         <Field label="Price (₹)">
           <input
             type="number"
             min={0}
+            step="any"
             inputMode="decimal"
-            defaultValue={p.price}
+            value={priceText}
             aria-label="Price (₹)"
-            onBlur={(e) => {
-              const v = Number(e.target.value);
-              if (Number.isFinite(v) && v >= 0)
-                void run(() => db.products.update(p.id!, { price: v }));
-              else toast.error("Price must be zero or more");
+            placeholder="0"
+            onChange={(e) => {
+              const raw = e.target.value;
+              setPriceText(raw);
+              const v = Number(raw);
+              if (raw === "" || !Number.isFinite(v) || v < 0) return;
+              if (v === p.price) return;
+              schedule("price", () => db.products.update(p.id!, { price: v }));
+            }}
+            onBlur={() => {
+              const v = Number(priceText);
+              if (priceText.trim() === "" || !Number.isFinite(v) || v < 0) {
+                setPriceText(String(p.price));
+                toast.error("Price must be zero or more");
+              }
             }}
             className={`${input} w-full`}
           />
@@ -538,9 +881,15 @@ function ProductRow({
             inputMode="numeric"
             defaultValue={p.stock}
             aria-label="Stock"
+            onChange={(e) => {
+              const n = Math.floor(Number(e.target.value));
+              if (!Number.isFinite(n) || n < 0) return;
+              if (n === p.stock) return;
+              schedule("stock", () => db.products.update(p.id!, { stock: n }));
+            }}
             onBlur={(e) => {
-              const v = Math.max(0, Math.floor(Number(e.target.value)));
-              if (Number.isFinite(v)) void run(() => db.products.update(p.id!, { stock: v }));
+              const n = Math.floor(Number(e.target.value));
+              if (!Number.isFinite(n) || n < 0) e.currentTarget.value = String(p.stock);
             }}
             className={`${input} w-full ${p.stock <= p.lowStock ? "border-destructive text-destructive" : ""}`}
           />
@@ -552,15 +901,21 @@ function ProductRow({
             inputMode="numeric"
             defaultValue={p.lowStock}
             aria-label="Low-stock alert"
+            onChange={(e) => {
+              const n = Math.floor(Number(e.target.value));
+              if (!Number.isFinite(n) || n < 0) return;
+              if (n === p.lowStock) return;
+              schedule("low", () => db.products.update(p.id!, { lowStock: n }));
+            }}
             onBlur={(e) => {
-              const v = Math.max(0, Math.floor(Number(e.target.value)));
-              if (Number.isFinite(v)) void run(() => db.products.update(p.id!, { lowStock: v }));
+              const n = Math.floor(Number(e.target.value));
+              if (!Number.isFinite(n) || n < 0) e.currentTarget.value = String(p.lowStock);
             }}
             className={`${input} w-full`}
           />
         </Field>
       </div>
-      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+      <div className="order-4 flex items-center gap-2 lg:order-none lg:contents">
         <button
           onClick={() => void run(() => db.products.update(p.id!, { active: !p.active }))}
           className={btn}
@@ -570,12 +925,12 @@ function ProductRow({
         <button onClick={onDeleteClick} className={btnDanger}>
           Delete
         </button>
-        {usedCount > 0 && (
-          <span className="w-full text-[11px] text-muted-foreground sm:w-auto">
-            used in {usedCount} bill{usedCount === 1 ? "" : "s"}
-          </span>
-        )}
       </div>
+      {usedCount > 0 && (
+        <span className="order-2 text-[11px] text-muted-foreground lg:order-none">
+          used in {usedCount} bill{usedCount === 1 ? "" : "s"}
+        </span>
+      )}
     </div>
   );
 }
@@ -589,36 +944,36 @@ function StylistRow({
   usedCount: number;
   onDeleteClick: () => void;
 }) {
-  const { status, run } = useCardSave();
+  const { status, run, schedule } = useCardSave();
   return (
     <div
-      className={`grid grid-cols-1 gap-2 border-b border-border/50 px-1 py-3 last:border-0 sm:items-center sm:gap-2 sm:py-2 ${colTpl.stylists} ${s.active ? "" : "opacity-60"}`}
+      className={`grid grid-cols-1 gap-2 border-b border-border/50 px-1 py-3 last:border-0 lg:items-center lg:gap-2 lg:py-2 ${colTpl.stylists} ${s.active ? "" : "opacity-60"}`}
     >
-      <div className="flex min-w-0 items-center gap-2">
+      <div className="order-1 flex min-w-0 items-center gap-2 lg:order-none">
         <input
           defaultValue={s.name}
           aria-label="Name"
+          onChange={(e) => {
+            const v = e.target.value.trim();
+            if (v && v !== s.name) schedule("name", () => db.stylists.update(s.id!, { name: v }));
+          }}
           onBlur={(e) => {
             const v = e.target.value.trim();
-            if (!v) {
-              e.currentTarget.value = s.name;
-              return;
-            }
-            if (v !== s.name) void run(() => db.stylists.update(s.id!, { name: v }));
+            if (!v) e.currentTarget.value = s.name;
           }}
           className={`${input} min-w-0 flex-1`}
         />
         <SaveStatus status={status} />
       </div>
-      <div className="grid grid-cols-2 gap-2 sm:contents">
+      <div className="order-3 grid grid-cols-2 gap-2 lg:order-none lg:contents">
         <Field label="Phone (optional)">
           <input
             inputMode="tel"
             defaultValue={s.phone}
             aria-label="Phone (optional)"
-            onBlur={(e) => {
+            onChange={(e) => {
               const v = e.target.value.trim();
-              if (v !== s.phone) void run(() => db.stylists.update(s.id!, { phone: v }));
+              if (v !== s.phone) schedule("phone", () => db.stylists.update(s.id!, { phone: v }));
             }}
             className={`${input} w-full`}
           />
@@ -631,15 +986,22 @@ function StylistRow({
             inputMode="numeric"
             defaultValue={s.commissionPct}
             aria-label="Commission %"
+            onChange={(e) => {
+              const n = Number(e.target.value);
+              if (!Number.isFinite(n) || n < 0 || n > 100) return;
+              if (n === s.commissionPct) return;
+              schedule("commission", () => db.stylists.update(s.id!, { commissionPct: n }));
+            }}
             onBlur={(e) => {
-              const v = Math.min(100, Math.max(0, Number(e.target.value) || 0));
-              void run(() => db.stylists.update(s.id!, { commissionPct: v }));
+              const n = Number(e.target.value);
+              if (!Number.isFinite(n) || n < 0 || n > 100)
+                e.currentTarget.value = String(s.commissionPct);
             }}
             className={`${input} w-full`}
           />
         </Field>
       </div>
-      <div className="flex flex-wrap items-center gap-2 sm:justify-end">
+      <div className="order-4 flex items-center gap-2 lg:order-none lg:contents">
         <button
           onClick={() => void run(() => db.stylists.update(s.id!, { active: !s.active }))}
           className={btn}
@@ -652,12 +1014,12 @@ function StylistRow({
         <Link to="/earnings" search={{ stylist: s.id ?? 0 }} className={btnAccent}>
           Earnings
         </Link>
-        {usedCount > 0 && (
-          <span className="w-full text-[11px] text-muted-foreground sm:w-auto">
-            used in {usedCount} bill{usedCount === 1 ? "" : "s"}
-          </span>
-        )}
       </div>
+      {usedCount > 0 && (
+        <span className="order-2 text-[11px] text-muted-foreground lg:order-none">
+          used in {usedCount} bill{usedCount === 1 ? "" : "s"}
+        </span>
+      )}
     </div>
   );
 }
@@ -674,6 +1036,7 @@ export function Catalog() {
   const [tab, setTab] = useState<"services" | "products" | "stylists">("services");
   const [adding, setAdding] = useState<{ kind: AddKind; categoryId?: number } | null>(null);
   const [pending, setPending] = useState<PendingDelete | null>(null);
+  const [bulkCat, setBulkCat] = useState<{ id: number; name: string } | null>(null);
 
   // One pass: how many saved bills reference each item (services/products by
   // line refId, stylists by line attribution or as cashier). Anything > 0 is
@@ -707,19 +1070,14 @@ export function Catalog() {
     return { svc, prod, sty };
   })();
 
-  const bulk = async (categoryId: number) => {
-    const pct = Number(prompt("Change prices in this category by % (e.g. 10 or -5)"));
-    if (!Number.isFinite(pct) || !pct) return;
-    await db.services
-      .where("categoryId")
-      .equals(categoryId)
-      .modify((s) => {
-        s.price = Math.max(0, Math.round(s.price * (1 + pct / 100)));
-      });
-    await logAudit("service.bulk", `category ${categoryId}: ${pct}%`);
-    toast.success(`Prices updated by ${pct}%`);
-  };
-
+  /**
+   * Bulk price used to be `prompt("…by %")` + a direct Dexie `modify()`:
+   * the numbers DID change in the database, but every price box is an
+   * uncontrolled `defaultValue` input, so the list kept rendering the old
+   * value until a full reload — and with no preview, no confirmation and an
+   * unhandled rejection path, any failure was silent too. It is now a dialog
+   * that shows exactly what will change before it writes it.
+   */
   const askDelete = (kind: AddKind, id: number | undefined, name: string, count: number) => {
     if (id === undefined) return;
     setPending({ kind, id, name, count });
@@ -755,7 +1113,7 @@ export function Catalog() {
   const addBtn = (kind: AddKind, categoryId?: number, label = "Add") => (
     <button
       onClick={() => setAdding(categoryId === undefined ? { kind } : { kind, categoryId })}
-      className="tap flex shrink-0 items-center gap-1 rounded-xl bg-accent px-3 text-sm font-semibold text-accent-foreground"
+      className="tap flex h-11 shrink-0 items-center gap-1 rounded-xl bg-accent px-3 text-sm font-semibold text-accent-foreground"
     >
       <Plus className="size-4" />
       {label}
@@ -795,22 +1153,23 @@ export function Catalog() {
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                   <h2 className="text-lg font-bold">{c.name}</h2>
                   <div className="flex gap-2">
-                    <button
-                      onClick={() => void bulk(c.id!)}
-                      className={`tap flex items-center gap-1 ${btn}`}
-                    >
+                    <button onClick={() => setBulkCat({ id: c.id!, name: c.name })} className={btn}>
                       <Percent className="size-4" />
                       Bulk price
                     </button>
                     {adding?.categoryId !== c.id && rows.length > 0 && addBtn("service", c.id)}
                   </div>
                 </div>
-                <div className={`${headCls} ${colTpl.services}`}>
-                  <span>Service name</span>
-                  <span>Price (₹)</span>
-                  <span>Duration (min)</span>
-                  <span />
-                </div>
+                {rows.length > 0 && (
+                  <div className={`${headCls} ${colTpl.services}`}>
+                    <span className={headCell}>Service name</span>
+                    <span className={headCell}>Price (₹)</span>
+                    <span className={headCell}>Duration (min)</span>
+                    <span className={headCell}>Disable</span>
+                    <span className={headCell}>Delete</span>
+                    <span />
+                  </div>
+                )}
                 {adding?.kind === "service" && adding.categoryId === c.id && (
                   <AddForm kind="service" categoryId={c.id} onDone={() => setAdding(null)} />
                 )}
@@ -854,13 +1213,17 @@ export function Catalog() {
               products.length > 0 &&
               addBtn("product", undefined, "Add product")}
           </div>
-          <div className={`${headCls} ${colTpl.products}`}>
-            <span>Product name</span>
-            <span>Price (₹)</span>
-            <span>Stock</span>
-            <span>Low-stock alert</span>
-            <span />
-          </div>
+          {products.length > 0 && (
+            <div className={`${headCls} ${colTpl.products}`}>
+              <span className={headCell}>Product name</span>
+              <span className={headCell}>Price (₹)</span>
+              <span className={headCell}>Stock</span>
+              <span className={headCell}>Low-stock alert</span>
+              <span className={headCell}>Disable</span>
+              <span className={headCell}>Delete</span>
+              <span />
+            </div>
+          )}
           {adding?.kind === "product" && <AddForm kind="product" onDone={() => setAdding(null)} />}
           {products.length ? (
             <div>
@@ -889,12 +1252,17 @@ export function Catalog() {
               stylists.length > 0 &&
               addBtn("stylist", undefined, "Add stylist")}
           </div>
-          <div className={`${headCls} ${colTpl.stylists}`}>
-            <span>Name</span>
-            <span>Phone</span>
-            <span>Commission %</span>
-            <span />
-          </div>
+          {stylists.length > 0 && (
+            <div className={`${headCls} ${colTpl.stylists}`}>
+              <span className={headCell}>Name</span>
+              <span className={headCell}>Phone</span>
+              <span className={headCell}>Commission %</span>
+              <span className={headCell}>Disable</span>
+              <span className={headCell}>Delete</span>
+              <span className={headCell}>Earnings</span>
+              <span />
+            </div>
+          )}
           {adding?.kind === "stylist" && <AddForm kind="stylist" onDone={() => setAdding(null)} />}
           {stylists.length ? (
             <div>
@@ -921,6 +1289,14 @@ export function Catalog() {
         onDisable={(p) => void doDisable(p)}
         onDelete={(p) => void doDelete(p)}
       />
+      {bulkCat && (
+        <BulkPriceDialog
+          categoryId={bulkCat.id}
+          categoryName={bulkCat.name}
+          services={services.filter((s) => s.categoryId === bulkCat.id)}
+          onClose={() => setBulkCat(null)}
+        />
+      )}
     </div>
   );
 }

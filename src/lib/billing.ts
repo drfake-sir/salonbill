@@ -27,6 +27,25 @@ export function computeTotals(
 }
 
 /**
+ * The name typed into the bill sheet's "Customer name or phone" field that
+ * was never linked to a customer record (a record needs a phone number).
+ *
+ * - digits only (spaces ignored) → that is a phone number, not a name: return
+ *   undefined so the existing "Add new customer" phone flow keeps owning it
+ *   unchanged;
+ * - empty/blank  → undefined, so the bill still reads "Walk-in";
+ * - otherwise    → the trimmed, whitespace-collapsed name, capped at 60 chars.
+ *
+ * This is what made a typed name like "syed" disappear: only a linked customer
+ * record ever reached `bill.customerName`.
+ */
+export function typedCustomerName(raw: string | undefined): string | undefined {
+  const q = (raw ?? "").trim().replace(/\s+/g, " ");
+  if (!q || /^\d+$/.test(q.replace(/\s/g, ""))) return undefined;
+  return q.slice(0, 60);
+}
+
+/**
  * Normalise an Indian customer phone to digits for wa.me links.
  * Accepts "9840012345", "09840012345", "+91 98400 12345", "91-98400-12345".
  * Returns null when the number cannot be trusted (not 10 digits after the

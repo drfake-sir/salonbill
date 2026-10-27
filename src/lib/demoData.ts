@@ -20,7 +20,18 @@
  * the salon has renamed or repurposed is treated as real data and kept.
  */
 
-import { db, type Bill, type Customer, type Service, type Stylist } from "./db";
+import {
+  STARTER_CATEGORIES,
+  STARTER_PRODUCTS,
+  STARTER_SERVICES,
+  STARTER_STYLISTS,
+  db,
+  type Bill,
+  type Customer,
+  type Product,
+  type Service,
+  type Stylist,
+} from "./db";
 import { downloadLocalBackup } from "./export";
 
 /* ------------------------- the seeded demo rows -------------------------- */
@@ -67,11 +78,27 @@ export const DEMO_CUSTOMERS: { id: number; name: string; phone: string }[] = [
   { id: 6, name: "Prakash Iyer", phone: "9444066778" },
 ];
 
+/** Starter products: seed ids 1-3 (db.ts seedIfEmpty). */
+export const DEMO_PRODUCTS: { id: number; name: string }[] = STARTER_PRODUCTS.map((p, i) => ({
+  id: i + 1,
+  name: p.name,
+}));
+
+/**
+ * Name matching used by restore: case-, space- and punctuation-spacing
+ * insensitive, so "arun" counts as "Arun" and "Men's  Haircut" as
+ * "Men's Haircut". Trimmed + collapsed + lowercased.
+ */
+export function normalizeName(raw: string): string {
+  return raw.trim().replace(/\s+/g, " ").toLowerCase();
+}
+
 /* --------------------------------- scan ---------------------------------- */
 
 export type DemoScan = {
   stylists: number[];
   services: number[];
+  products: number[];
   customers: number[];
 };
 
@@ -79,17 +106,21 @@ export type DemoScan = {
 export function scanDemoData(input: {
   stylists: Pick<Stylist, "id" | "name" | "phone">[];
   services: Pick<Service, "id" | "name">[];
+  products: Pick<Product, "id" | "name">[];
   customers: Pick<Customer, "id" | "name" | "phone">[];
 }): DemoScan {
   const isDemoStaff = (r: Pick<Stylist, "id" | "name" | "phone">) =>
     DEMO_STAFF.some((s) => r.id === s.id && r.name === s.name && r.phone === s.phone);
   const isDemoService = (r: Pick<Service, "id" | "name">) =>
     DEMO_SERVICES.some((s) => r.id === s.id && r.name === s.name);
+  const isDemoProduct = (r: Pick<Product, "id" | "name">) =>
+    DEMO_PRODUCTS.some((p) => r.id === p.id && r.name === p.name);
   const isDemoCustomer = (r: Pick<Customer, "id" | "name" | "phone">) =>
     DEMO_CUSTOMERS.some((c) => r.id === c.id && r.name === c.name && r.phone === c.phone);
   return {
     stylists: input.stylists.filter(isDemoStaff).map((r) => r.id as number),
     services: input.services.filter(isDemoService).map((r) => r.id as number),
+    products: input.products.filter(isDemoProduct).map((r) => r.id as number),
     customers: input.customers.filter(isDemoCustomer).map((r) => r.id as number),
   };
 }
@@ -104,14 +135,36 @@ export function hasRealBills(bills: Pick<Bill, "status">[]): boolean {
 
 /* ------------------------------- removal --------------------------------- */
 
+/**
+ * What the owner actually ticked. Everything defaults to FALSE: no action
+ * runs, and nothing in the catalog is removed, unless its own box is ticked
+ * AND confirmed ("Clear starter services and products" is one action).
+ */
+export type RemoveSelection = {
+  /** Remove demo customers (fake people). */
+  customers: boolean;
+  /** Remove starter staff (the seeded stylists). */
+  staff: boolean;
+  /** Clear starter services and products. */
+  catalog: boolean;
+};
+
+export const NO_REMOVAL: RemoveSelection = { customers: false, staff: false, catalog: false };
+/** Everything ticked — used by tests and any "remove all" affordance. */
+export const ALL_REMOVALS: RemoveSelection = { customers: true, staff: true, catalog: true };
+
 export type RemoveOutcome =
   | { ok: true; removed: DemoScan }
-  | { ok: false; reason: "real-bills" | "no-demo" | "backup-failed" | "declined" };
+  | {
+      ok: false;
+      reason: "real-bills" | "no-demo" | "backup-failed" | "declined" | "nothing-selected";
+    };
 
 export type RemoveDeps = {
   load: () => Promise<{
     stylists: Pick<Stylist, "id" | "name" | "phone">[];
     services: Pick<Service, "id" | "name">[];
+    products: Pick<Product, "id" | "name">[];
     customers: Pick<Customer, "id" | "name" | "phone">[];
     bills: Pick<Bill, "status">[];
   }>;
@@ -125,6 +178,7 @@ export const defaultRemoveDeps: RemoveDeps = {
   load: async () => ({
     stylists: await db.stylists.toArray(),
     services: await db.services.toArray(),
+    products: await db.products.toArray(),
     customers: await db.customers.toArray(),
     bills: await db.bills.toArray(),
   }),
@@ -135,30 +189,65 @@ export const defaultRemoveDeps: RemoveDeps = {
     // row, and the sync outbox pushes `op: "del"` — normal tombstones.
     // (No bulk helper: per-row delete() is the path the sync hooks are built
     // and tested around.)
-    await db.transaction("rw", [db.stylists, db.services, db.customers], async () => {
+    await db.transaction("rw", [db.stylists, db.services, db.products, db.customers], async () => {
       for (const id of scan.stylists) await db.stylists.delete(id);
       for (const id of scan.services) await db.services.delete(id);
+      for (const id of scan.products) await db.products.delete(id);
       for (const id of scan.customers) await db.customers.delete(id);
     });
   },
 };
 
-/** One-step demo removal with backup + confirmation + real-bill refusal. */
-export async function removeDemoData(overrides?: Partial<RemoveDeps>): Promise<RemoveOutcome> {
+/**
+ * Read-only preflight used by the cleanup card (and its tests): loads the
+ * current rows and reports exactly which seeded demo rows are still present,
+ * plus whether any real bill exists (which makes every removal refuse).
+ * Never writes anything.
+ */
+export async function findDemoRows(
+  overrides?: Partial<RemoveDeps>,
+): Promise<{ scan: DemoScan; realBills: boolean }> {
   const deps = { ...defaultRemoveDeps, ...overrides };
+  const data = await deps.load();
+  return { scan: scanDemoData(data), realBills: hasRealBills(data.bills) };
+}
+
+/**
+ * Demo removal with backup + confirmation + real-bills refusal, run only for
+ * the boxes the owner ticked. Each action needs its own confirmation.
+ */
+export async function removeDemoData(
+  selection: RemoveSelection = NO_REMOVAL,
+  overrides?: Partial<RemoveDeps>,
+): Promise<RemoveOutcome> {
+  const deps = { ...defaultRemoveDeps, ...overrides };
+  if (!selection.customers && !selection.staff && !selection.catalog)
+    return { ok: false, reason: "nothing-selected" };
+
   const data = await deps.load();
 
   if (hasRealBills(data.bills)) return { ok: false, reason: "real-bills" };
 
-  const scan = scanDemoData(data);
-  const total = scan.stylists.length + scan.services.length + scan.customers.length;
+  const found = scanDemoData(data);
+  const scan: DemoScan = {
+    stylists: selection.staff ? found.stylists : [],
+    services: selection.catalog ? found.services : [],
+    products: selection.catalog ? found.products : [],
+    customers: selection.customers ? found.customers : [],
+  };
+  const total =
+    scan.stylists.length + scan.services.length + scan.products.length + scan.customers.length;
   if (!total) return { ok: false, reason: "no-demo" };
 
+  const parts: string[] = [];
+  if (selection.staff) parts.push(`${scan.stylists.length} starter staff`);
+  if (selection.catalog)
+    parts.push(`${scan.services.length} services and ${scan.products.length} products`);
+  if (selection.customers) parts.push(`${scan.customers.length} demo customers`);
+
   const declined = !deps.confirm(
-    "Remove demo data?\n\n" +
-      `${scan.stylists.length} demo staff, ${scan.services.length} demo services and ` +
-      `${scan.customers.length} demo customers will be deleted from this device and, ` +
-      "via sync, from every other device.\n\n" +
+    `Remove ${parts.join(" + ")}?\n\n` +
+      "These rows will be deleted from this device and, via sync, from every other device.\n\n" +
       "A local backup is downloaded first — restore it to undo.",
   );
   if (declined) return { ok: false, reason: "declined" };
@@ -173,3 +262,121 @@ export async function removeDemoData(overrides?: Partial<RemoveDeps>): Promise<R
   await deps.remove(scan);
   return { ok: true, removed: scan };
 }
+
+/* ------------------------------ restore ---------------------------------- */
+
+export type RestoreCounts = {
+  categories: number;
+  services: number;
+  products: number;
+  stylists: number;
+};
+
+export type RestoreDeps = {
+  load: () => Promise<{
+    categories: { id?: number | undefined; name: string }[];
+    services: { name: string; categoryId: number }[];
+    products: { name: string }[];
+    stylists: { name: string }[];
+  }>;
+  create: {
+    category: (name: string, order: number) => Promise<number>;
+    service: (s: {
+      name: string;
+      categoryId: number;
+      price: number;
+      duration: number;
+    }) => Promise<unknown>;
+    product: (p: {
+      name: string;
+      price: number;
+      stock: number;
+      lowStock: number;
+    }) => Promise<unknown>;
+    stylist: (s: { name: string; phone: string; commissionPct: number }) => Promise<unknown>;
+  };
+};
+
+export const defaultRestoreDeps: RestoreDeps = {
+  load: async () => ({
+    categories: await db.categories.toArray(),
+    services: await db.services.toArray(),
+    products: await db.products.toArray(),
+    stylists: await db.stylists.toArray(),
+  }),
+  create: {
+    category: (name, order) => db.categories.add({ name, order }),
+    service: (s) => db.services.add({ ...s, gstRate: 18, commissionPct: 10, active: true }),
+    product: (p) => db.products.add({ ...p, gstRate: 18, active: true }),
+    // NO pin: a restored stylist cannot sign in until the owner sets one.
+    stylist: (s) => db.stylists.add({ ...s, active: true }),
+  },
+};
+
+/**
+ * Put the starter catalog back — ADD MISSING ROWS ONLY.
+ *
+ * - matched by name, ignoring case and repeated spaces ("arun" = "Arun");
+ * - never edits, renames, re-prices or deletes anything that exists;
+ * - never touches bills — saved lines keep their own price snapshots;
+ * - uses the normal `add()` create paths (leased ids), so every restored row
+ *   is enqueued and synced like any other create;
+ * - safe to run twice: the second run adds 0;
+ * - restored stylists come back WITHOUT a PIN.
+ */
+export async function restoreStarterCatalog(
+  overrides?: Partial<RestoreDeps>,
+): Promise<RestoreCounts> {
+  const deps = { ...defaultRestoreDeps, ...overrides };
+  const data = await deps.load();
+  const counts: RestoreCounts = { categories: 0, services: 0, products: 0, stylists: 0 };
+
+  const present = (rows: { name: string }[], name: string) =>
+    rows.some((r) => normalizeName(r.name) === normalizeName(name));
+
+  // Categories first: every restored service needs a real categoryId.
+  const catId = new Map<string, number>();
+  for (const c of data.categories) if (c.id !== undefined) catId.set(normalizeName(c.name), c.id);
+  let order = data.categories.length;
+  for (const name of STARTER_CATEGORIES) {
+    if (catId.has(normalizeName(name))) continue;
+    catId.set(normalizeName(name), await deps.create.category(name, order++));
+    counts.categories++;
+  }
+
+  for (const s of STARTER_SERVICES) {
+    if (present(data.services, s.name)) continue;
+    const categoryId = catId.get(normalizeName(s.category));
+    if (categoryId === undefined) continue; // never write a row we can't place
+    await deps.create.service({
+      name: s.name,
+      categoryId,
+      price: s.price,
+      duration: s.duration,
+    });
+    counts.services++;
+  }
+
+  for (const p of STARTER_PRODUCTS) {
+    if (present(data.products, p.name)) continue;
+    await deps.create.product({
+      name: p.name,
+      price: p.price,
+      stock: p.stock,
+      lowStock: p.lowStock,
+    });
+    counts.products++;
+  }
+
+  for (const s of STARTER_STYLISTS) {
+    if (present(data.stylists, s.name)) continue;
+    await deps.create.stylist({ name: s.name, phone: s.phone, commissionPct: s.commissionPct });
+    counts.stylists++;
+  }
+
+  return counts;
+}
+
+/** The toast sentence the owner is promised, verbatim. */
+export const restoreReport = (c: RestoreCounts) =>
+  `Added ${c.services} services, ${c.products} products, ${c.stylists} stylists`;

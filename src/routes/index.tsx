@@ -34,7 +34,7 @@ import {
   type Payment,
   type ReceiptInfo,
 } from "@/lib/db";
-import { computeTotals, inr } from "@/lib/billing";
+import { computeTotals, inr, typedCustomerName } from "@/lib/billing";
 import { defaultStylistIdFor, stylistNameFor, unattributedServiceLines } from "@/lib/attribution";
 import {
   applyServedBy,
@@ -233,7 +233,10 @@ function Billing() {
       // Which phone/tablet wrote this bill — set once, per device.
       deviceName: getDeviceName() || undefined,
       customerId: cust?.id,
-      customerName: cust?.name,
+      // A name typed with no phone never becomes a customer record, but it
+      // still rides on the bill — trimmed, capped, and shown instead of
+      // "Walk-in" everywhere the bill is read.
+      customerName: cust?.name ?? typedCustomerName(custQ),
       customerPhone: cust?.phone,
       lines: lines.map((l) => ({
         ...l,
@@ -426,13 +429,13 @@ function Billing() {
         tip,
         mode,
         customerId: cust?.id,
-        customerName: cust?.name,
+        customerName: cust?.name ?? typedCustomerName(custQ),
         customerPhone: cust?.phone,
         heldId,
       }).catch(() => {});
     }, 400);
     return () => clearTimeout(t);
-  }, [lines, discType, disc, tip, mode, cust, heldId, tabId]);
+  }, [lines, discType, disc, tip, mode, cust, custQ, heldId, tabId]);
 
   // On load: recover this tab's draft and surface drafts left by closed tabs.
   useEffect(() => {
@@ -565,57 +568,84 @@ function Billing() {
 
       {cust ? (
         // One compact line: name, phone, remove (44px).
-        <div className="flex shrink-0 items-center gap-2 rounded-xl bg-gold-soft py-1 pl-3 pr-1">
-          <span className="min-w-0 flex-1 truncate text-sm font-semibold">{cust.name}</span>
-          <span className="shrink-0 text-sm text-muted-foreground">{cust.phone}</span>
-          <button
-            onClick={() => setCust(null)}
-            aria-label="Remove customer"
-            className="tap grid size-11 shrink-0 place-items-center"
-          >
-            <X className="size-4" />
-          </button>
+        <div className="shrink-0">
+          <span className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+            Customer name or phone
+          </span>
+          <div className="flex items-center gap-2 rounded-xl bg-gold-soft py-1 pl-3 pr-1">
+            <span className="min-w-0 flex-1 truncate text-sm font-semibold">{cust.name}</span>
+            <span className="shrink-0 text-sm text-muted-foreground">{cust.phone}</span>
+            <button
+              onClick={() => setCust(null)}
+              aria-label="Remove customer"
+              className="tap grid size-11 shrink-0 place-items-center"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
         </div>
       ) : (
-        <div className="relative shrink-0">
-          <input
-            value={custQ}
-            onChange={(e) => setCustQ(e.target.value)}
-            placeholder="Customer name or phone"
-            inputMode={/^\d+$/.test(custQ) || custQ === "" ? "numeric" : "text"}
-            className="tap w-full rounded-2xl border border-input bg-card px-4 py-2.5 outline-none focus:ring-2 focus:ring-ring"
-          />
-          {custQ.length >= 2 && (
-            <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-2xl border bg-popover shadow-lift">
-              {custMatches.map((c) => (
-                <button
-                  key={c.id}
-                  onClick={() => {
-                    setCust(c);
-                    setCustQ("");
-                  }}
-                  className="flex w-full justify-between gap-2 px-4 py-3 text-left hover:bg-secondary"
-                >
-                  <span className="truncate">{c.name}</span>
-                  <span className="shrink-0 text-muted-foreground">{c.phone}</span>
-                </button>
-              ))}
-              {/^\d{10}$/.test(custQ) && !custMatches.length && (
-                <button
-                  onClick={() => {
-                    const name = prompt("Customer name?");
-                    if (name) {
-                      setCust({ name, phone: custQ });
+        <div className="shrink-0">
+          <label
+            htmlFor="bill-customer"
+            className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
+          >
+            Customer name or phone
+          </label>
+          <div className="relative">
+            <input
+              id="bill-customer"
+              aria-label="Customer name or phone"
+              value={custQ}
+              onChange={(e) => setCustQ(e.target.value)}
+              placeholder="Customer name or phone"
+              maxLength={60}
+              inputMode={/^\d+$/.test(custQ) || custQ === "" ? "numeric" : "text"}
+              className="tap w-full rounded-2xl border border-input bg-card px-4 py-2.5 outline-none focus:ring-2 focus:ring-ring"
+            />
+            {custQ.length >= 2 && (
+              <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-2xl border bg-popover shadow-lift">
+                {custMatches.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => {
+                      setCust(c);
                       setCustQ("");
-                    }
-                  }}
-                  className="flex w-full items-center gap-2 px-4 py-3 text-primary hover:bg-secondary"
-                >
-                  <UserPlus className="size-4" />
-                  Add new customer {custQ}
-                </button>
-              )}
-            </div>
+                    }}
+                    className="flex w-full justify-between gap-2 px-4 py-3 text-left hover:bg-secondary"
+                  >
+                    <span className="truncate">{c.name}</span>
+                    <span className="shrink-0 text-muted-foreground">{c.phone}</span>
+                  </button>
+                ))}
+                {/^\d{10}$/.test(custQ) && !custMatches.length && (
+                  <button
+                    onClick={() => {
+                      const name = prompt("Customer name?");
+                      if (name) {
+                        setCust({ name, phone: custQ });
+                        setCustQ("");
+                      }
+                    }}
+                    className="flex w-full items-center gap-2 px-4 py-3 text-primary hover:bg-secondary"
+                  >
+                    <UserPlus className="size-4" />
+                    Add new customer {custQ}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Add a phone to save the customer and send on WhatsApp
+          </p>
+          {typedCustomerName(custQ) && (
+            <p
+              data-testid="saving-as"
+              className="mt-0.5 text-xs font-semibold text-accent-foreground"
+            >
+              Saving as: {typedCustomerName(custQ)}
+            </p>
           )}
         </div>
       )}

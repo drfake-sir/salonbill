@@ -1,11 +1,11 @@
 import { useEffect, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
-import { Sparkles, Trash2 } from "lucide-react";
+import { Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { db, logAudit } from "@/lib/db";
 import { signInOwner } from "@/lib/lock";
 import { hashPin, isValidNewPin } from "@/lib/pins";
-import { removeDemoData } from "@/lib/demoData";
+import { DemoCleanup } from "@/components/DemoCleanup";
 import { prefillShopFields, setupFinishPatch } from "@/lib/shopDefaults";
 
 /**
@@ -23,15 +23,15 @@ import { prefillShopFields, setupFinishPatch } from "@/lib/shopDefaults";
  *     while anything customised is never overwritten;
  *  2. set a NEW owner PIN (6-8 digits, PBKDF2-hashed) — so the seeded default
  *     PIN can never stay in use;
- *  3. optionally remove the seeded demo staff/services/customers in one step
- *     (backup first, refuses if real bills exist) — the same action Settings
- *     offers afterwards as "Remove demo data".
+ *  3. an OPTIONAL demo-cleanup step (never a gate — Finish setup works
+ *     without touching it): remove the seeded demo staff/services/customers in
+ *     one step, backup first, refuses if real bills exist — the same action
+ *     Settings offers afterwards as "Remove demo data".
  */
 export function SetupScreen() {
   const settings = useLiveQuery(() => db.settings.get(1));
   const [pin, setPin] = useState("");
   const [busy, setBusy] = useState(false);
-  const [removing, setRemoving] = useState(false);
   const [shopName, setShopName] = useState("");
   const [shopPhone, setShopPhone] = useState("");
   const [shopAddress, setShopAddress] = useState("");
@@ -81,35 +81,6 @@ export function SetupScreen() {
     }
   };
 
-  const runRemoveDemo = async () => {
-    if (removing) return;
-    setRemoving(true);
-    try {
-      const r = await removeDemoData();
-      if (r.ok) {
-        const n =
-          r.removed.stylists.length + r.removed.services.length + r.removed.customers.length;
-        toast.success(
-          `Demo data removed · ${r.removed.stylists.length} staff, ` +
-            `${r.removed.services.length} services, ${r.removed.customers.length} customers ` +
-            `(${n} rows) — backup downloaded first`,
-        );
-      } else if (r.reason === "real-bills") {
-        toast.error("This salon has real bills — demo data was NOT removed.");
-      } else if (r.reason === "backup-failed") {
-        toast.error("Could not save a safety backup — nothing was removed.");
-      } else if (r.reason === "no-demo") {
-        toast.info("No demo data found on this device.");
-      }
-      // "declined" → silent
-    } catch (e) {
-      console.error(e);
-      toast.error("Could not remove demo data — nothing was changed.");
-    } finally {
-      setRemoving(false);
-    }
-  };
-
   return (
     <div className="mx-auto grid min-h-[70vh] max-w-md place-items-center">
       <div className="w-full rounded-3xl bg-card p-6 shadow-soft">
@@ -119,7 +90,8 @@ export function SetupScreen() {
         <h1 className="text-xl font-extrabold">Set up your salon</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           Three quick steps: your shop details, your own owner PIN (the default one can't stay in
-          use), and removing the demo staff, services and customers we seeded for the trial.
+          use), and — when you're ready — clearing out the demo staff, services and customers we
+          seeded for the trial.
         </p>
 
         <section className="mt-5 space-y-3">
@@ -172,20 +144,9 @@ export function SetupScreen() {
           </p>
         </section>
 
-        <section className="mt-5 space-y-2 rounded-2xl bg-secondary p-4">
-          <h2 className="font-bold">3 · Demo data</h2>
-          <p className="text-sm text-muted-foreground">
-            A local backup is downloaded first, and removal is refused if any real bill exists.
-            Deletions sync to every device as normal tombstones.
-          </p>
-          <button
-            onClick={() => void runRemoveDemo()}
-            disabled={removing}
-            className="tap flex w-full items-center justify-center gap-2 rounded-xl bg-card px-4 py-2.5 font-semibold shadow-soft disabled:opacity-60"
-          >
-            <Trash2 className="size-4" />
-            {removing ? "Removing…" : "Remove demo data"}
-          </button>
+        <section className="mt-5">
+          <h2 className="mb-2 font-bold">3 · Demo data (optional)</h2>
+          <DemoCleanup />
         </section>
 
         <button

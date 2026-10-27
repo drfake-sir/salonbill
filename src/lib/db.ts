@@ -326,6 +326,66 @@ export const defaultSettings: Settings = {
 export async function logAudit(action: string, detail: string) {
   await db.audit.add({ at: Date.now(), action, detail });
 }
+/**
+ * ----------------------------- starter catalog -----------------------------
+ *
+ * The ONE source for the catalog every fresh install is seeded with, used by
+ * BOTH `seedIfEmpty()` (new device) and `restoreStarterCatalog()` (put back
+ * what was deleted). Rows are matched by name (case- and space-insensitive),
+ * so renaming one of these only changes what a FUTURE install gets.
+ */
+export const STARTER_CATEGORIES = ["Hair", "Colour", "Skin", "Spa", "Nails"] as const;
+
+export const STARTER_SERVICES: readonly {
+  name: string;
+  category: string;
+  price: number;
+  duration: number;
+}[] = [
+  { name: "Men's Haircut", category: "Hair", price: 300, duration: 30 },
+  { name: "Women's Haircut", category: "Hair", price: 600, duration: 45 },
+  { name: "Kids Haircut", category: "Hair", price: 200, duration: 20 },
+  { name: "Beard Trim & Styling", category: "Hair", price: 150, duration: 15 },
+  { name: "Blow Dry", category: "Hair", price: 400, duration: 30 },
+  { name: "Hair Spa (L'Oréal)", category: "Hair", price: 1200, duration: 60 },
+  { name: "Keratin Treatment", category: "Hair", price: 4500, duration: 150 },
+  { name: "Global Hair Colour", category: "Colour", price: 2500, duration: 90 },
+  { name: "Root Touch-up", category: "Colour", price: 900, duration: 45 },
+  { name: "Highlights (per streak)", category: "Colour", price: 250, duration: 15 },
+  { name: "Fruit Facial", category: "Skin", price: 900, duration: 45 },
+  { name: "O3+ Facial", category: "Skin", price: 2800, duration: 60 },
+  { name: "Threading – Eyebrows", category: "Skin", price: 50, duration: 10 },
+  { name: "Full Arms Waxing", category: "Skin", price: 450, duration: 30 },
+  { name: "D-Tan Pack", category: "Skin", price: 600, duration: 30 },
+  { name: "Head Massage", category: "Spa", price: 350, duration: 20 },
+  { name: "Full Body Massage", category: "Spa", price: 2200, duration: 60 },
+  { name: "Classic Manicure", category: "Nails", price: 500, duration: 40 },
+  { name: "Pedicure Deluxe", category: "Nails", price: 800, duration: 50 },
+  { name: "Gel Polish", category: "Nails", price: 700, duration: 40 },
+];
+
+export const STARTER_PRODUCTS: readonly {
+  name: string;
+  price: number;
+  stock: number;
+  lowStock: number;
+}[] = [
+  { name: "L'Oréal Shampoo 250ml", price: 450, stock: 12, lowStock: 3 },
+  { name: "Matrix Hair Serum", price: 350, stock: 2, lowStock: 3 },
+  { name: "Beardo Beard Oil", price: 299, stock: 8, lowStock: 2 },
+];
+
+export const STARTER_STYLISTS: readonly {
+  name: string;
+  phone: string;
+  commissionPct: number;
+}[] = [
+  { name: "Karthik", phone: "9840011111", commissionPct: 10 },
+  { name: "Priya", phone: "9840022222", commissionPct: 12 },
+  { name: "Arun", phone: "9840033333", commissionPct: 10 },
+  { name: "Divya", phone: "9840044444", commissionPct: 15 },
+];
+
 export async function seedIfEmpty() {
   if (await db.settings.get(1)) return;
   // Salted hashes from the very first write: a brand-new device never puts a
@@ -342,115 +402,41 @@ export async function seedIfEmpty() {
 
       if (await db.settings.get(1)) return;
       await db.settings.put({ ...defaultSettings, ownerPin });
-      const cats = ["Hair", "Colour", "Skin", "Spa", "Nails"];
       // Explicit ids: seeds are deterministic on every fresh device and the
       // creating hook (which can't read an auto key) still records them.
-      await db.categories.bulkPut(cats.map((name, order) => ({ id: order + 1, name, order })));
-      const [hair, colour, skin, spa, nails] = [1, 2, 3, 4, 5] as const;
-      const s = (
-        id: number,
-        name: string,
-        categoryId: number,
-        price: number,
-        duration: number,
-      ): Service => ({
-        id,
-        name,
-        categoryId,
-        price,
-        duration,
-        gstRate: 18,
-        commissionPct: 10,
-        active: true,
-      });
-      await db.services.bulkPut([
-        s(1, "Men's Haircut", hair, 300, 30),
-        s(2, "Women's Haircut", hair, 600, 45),
-        s(3, "Kids Haircut", hair, 200, 20),
-        s(4, "Beard Trim & Styling", hair, 150, 15),
-        s(5, "Blow Dry", hair, 400, 30),
-        s(6, "Hair Spa (L'Oréal)", hair, 1200, 60),
-        s(7, "Keratin Treatment", hair, 4500, 150),
-        s(8, "Global Hair Colour", colour, 2500, 90),
-        s(9, "Root Touch-up", colour, 900, 45),
-        s(10, "Highlights (per streak)", colour, 250, 15),
-        s(11, "Fruit Facial", skin, 900, 45),
-        s(12, "O3+ Facial", skin, 2800, 60),
-        s(13, "Threading – Eyebrows", skin, 50, 10),
-        s(14, "Full Arms Waxing", skin, 450, 30),
-        s(15, "D-Tan Pack", skin, 600, 30),
-        s(16, "Head Massage", spa, 350, 20),
-        s(17, "Full Body Massage", spa, 2200, 60),
-        s(18, "Classic Manicure", nails, 500, 40),
-        s(19, "Pedicure Deluxe", nails, 800, 50),
-        s(20, "Gel Polish", nails, 700, 40),
-      ]);
-      await db.products.bulkPut([
-        {
-          id: 1,
-          name: "L'Oréal Shampoo 250ml",
-          price: 450,
-          stock: 12,
-          lowStock: 3,
+      await db.categories.bulkPut(
+        STARTER_CATEGORIES.map((name, order) => ({ id: order + 1, name, order })),
+      );
+      const catId = (name: string) =>
+        STARTER_CATEGORIES.indexOf(name as (typeof STARTER_CATEGORIES)[number]) + 1;
+      await db.services.bulkPut(
+        STARTER_SERVICES.map((s, i) => ({
+          id: i + 1,
+          name: s.name,
+          categoryId: catId(s.category),
+          price: s.price,
+          duration: s.duration,
           gstRate: 18,
+          commissionPct: 10,
           active: true,
-        },
-        {
-          id: 2,
-          name: "Matrix Hair Serum",
-          price: 350,
-          stock: 2,
-          lowStock: 3,
-          gstRate: 18,
-          active: true,
-        },
-        {
-          id: 3,
-          name: "Beardo Beard Oil",
-          price: 299,
-          stock: 8,
-          lowStock: 2,
-          gstRate: 18,
-          active: true,
-        },
-      ]);
+        })),
+      );
+      await db.products.bulkPut(
+        STARTER_PRODUCTS.map((p, i) => ({ id: i + 1, ...p, gstRate: 18, active: true })),
+      );
       // Default staff PINs so identity stamping works out of the box — the
       // owner changes them in Settings → Staff & PINs. Stored as salted
       // hashes; the demo digits (1111 / 2222 / 3333 / 4444) still sign in.
-      await db.stylists.bulkPut([
-        {
-          id: 1,
-          name: "Karthik",
-          phone: "9840011111",
-          commissionPct: 10,
+      await db.stylists.bulkPut(
+        STARTER_STYLISTS.map((s, i) => ({
+          id: i + 1,
+          name: s.name,
+          phone: s.phone,
+          commissionPct: s.commissionPct,
           active: true,
-          pin: staffPins[0],
-        },
-        {
-          id: 2,
-          name: "Priya",
-          phone: "9840022222",
-          commissionPct: 12,
-          active: true,
-          pin: staffPins[1],
-        },
-        {
-          id: 3,
-          name: "Arun",
-          phone: "9840033333",
-          commissionPct: 10,
-          active: true,
-          pin: staffPins[2],
-        },
-        {
-          id: 4,
-          name: "Divya",
-          phone: "9840044444",
-          commissionPct: 15,
-          active: true,
-          pin: staffPins[3],
-        },
-      ]);
+          pin: staffPins[i],
+        })),
+      );
       const now = Date.now();
       await db.customers.bulkPut(
         (

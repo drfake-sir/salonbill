@@ -1,5 +1,6 @@
 import { QRCodeSVG } from "qrcode.react";
 import type { Bill, Settings, Stylist } from "@/lib/db";
+import { deviceLabel } from "@/lib/db";
 import { inr } from "@/lib/billing";
 
 export function ReceiptView({
@@ -60,7 +61,8 @@ export function ReceiptView({
           Customer: {bill.customerName} {bill.customerPhone}
         </div>
       )}
-      {bill.cashierName && <div>Cashier: {bill.cashierName}</div>}
+      {bill.cashierName && <div>Billed by: {bill.cashierName}</div>}
+      <div>Device: {deviceLabel(bill)}</div>
       {bill.status === "cancelled" && (
         <div style={{ fontWeight: 800, textAlign: "center" }}>*** CANCELLED ***</div>
       )}

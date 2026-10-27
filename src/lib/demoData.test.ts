@@ -2,11 +2,17 @@ import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  ALL_REMOVALS,
   DEMO_CUSTOMERS,
+  DEMO_PRODUCTS,
   DEMO_SERVICES,
   DEMO_STAFF,
+  NO_REMOVAL,
+  findDemoRows,
   hasRealBills,
   removeDemoData,
+  restoreReport,
+  restoreStarterCatalog,
   scanDemoData,
   type DemoScan,
 } from "./demoData";
@@ -35,6 +41,7 @@ const seedInput = () => ({
     commissionPct: 10,
     active: true,
   })),
+  products: DEMO_PRODUCTS.map((p) => ({ ...p, price: 450, stock: 12, lowStock: 3 })),
   customers: DEMO_CUSTOMERS.map((c) => ({ ...c, createdAt: 1 })),
   bills: [] as { status: "paid" | "held" | "cancelled" }[],
 });
@@ -49,6 +56,7 @@ describe("scanDemoData", () => {
     expect(scan.services).toContain(1);
     expect(scan.services).toContain(20);
     expect(scan.customers).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(scan.products).toEqual([1, 2, 3]);
   });
 
   it("keeps rows the salon has renamed, repurposed or added (real data)", () => {
@@ -67,14 +75,19 @@ describe("scanDemoData", () => {
         { id: 1, name: "Lakshmi Narayanan", phone: "9841234567" }, // demo → delete
         { id: 7, name: "Meena Ramesh", phone: "9000000000" }, // real, same name → keep
       ],
+      products: [
+        { id: 1, name: "L'Oréal Shampoo 250ml" }, // demo → delete
+        { id: 4, name: "Matrix Hair Serum" }, // real product reusing the name → keep
+      ],
     });
-    expect(scan).toEqual({ stylists: [2], services: [1], customers: [1] });
+    expect(scan).toEqual({ stylists: [2], services: [1], products: [1], customers: [1] });
   });
 
   it("returns empty scans when there is no demo data left", () => {
-    expect(scanDemoData({ stylists: [], services: [], customers: [] })).toEqual({
+    expect(scanDemoData({ stylists: [], services: [], products: [], customers: [] })).toEqual({
       stylists: [],
       services: [],
+      products: [],
       customers: [],
     });
   });
@@ -100,7 +113,7 @@ function harness(overrides?: {
 }) {
   const calls: string[] = [];
   let scanSeen: DemoScan | null = null;
-  const result = removeDemoData({
+  const result = removeDemoData(ALL_REMOVALS, {
     load: async () => ({ ...seedInput(), bills: overrides?.bills ?? [] }),
     confirm: () => {
       calls.push("confirm");
@@ -136,6 +149,7 @@ describe("removeDemoData", () => {
     const scan = h.scanSeen()!;
     expect(scan.stylists).toHaveLength(4);
     expect(scan.services).toHaveLength(20);
+    expect(scan.products).toHaveLength(3);
     expect(scan.customers).toHaveLength(6);
   });
 
@@ -156,8 +170,14 @@ describe("removeDemoData", () => {
   });
 
   it("reports 'no-demo' when there is nothing to remove", async () => {
-    const r = await removeDemoData({
-      load: async () => ({ stylists: [], services: [], customers: [], bills: [] }),
+    const r = await removeDemoData(ALL_REMOVALS, {
+      load: async () => ({
+        stylists: [],
+        services: [],
+        products: [],
+        customers: [],
+        bills: [],
+      }),
       confirm: () => true,
       backup: async () => {},
       remove: async () => {
@@ -165,6 +185,88 @@ describe("removeDemoData", () => {
       },
     });
     expect(r).toEqual({ ok: false, reason: "no-demo" });
+  });
+
+  it("does nothing at all when no box is ticked", async () => {
+    const r = await removeDemoData(NO_REMOVAL, {
+      load: async () => {
+        throw new Error("must not even load");
+      },
+      confirm: () => true,
+      backup: async () => {},
+      remove: async () => {
+        throw new Error("must not run");
+      },
+    });
+    expect(r).toEqual({ ok: false, reason: "nothing-selected" });
+  });
+
+  it("each ticked box removes only its own rows", async () => {
+    const seen: DemoScan[] = [];
+    const deps = {
+      load: async () => seedInput(),
+      confirm: () => true,
+      backup: async () => {},
+      remove: async (scan: DemoScan) => {
+        seen.push(scan);
+      },
+    };
+    await removeDemoData({ ...NO_REMOVAL, customers: true }, deps);
+    await removeDemoData({ ...NO_REMOVAL, staff: true }, deps);
+    await removeDemoData({ ...NO_REMOVAL, catalog: true }, deps);
+    expect(seen[0]).toEqual({
+      stylists: [],
+      services: [],
+      products: [],
+      customers: [1, 2, 3, 4, 5, 6],
+    });
+    expect(seen[1]).toEqual({ stylists: [1, 2, 3, 4], services: [], products: [], customers: [] });
+    expect(seen[2]).toEqual({
+      stylists: [],
+      services: expect.any(Array),
+      products: [1, 2, 3],
+      customers: [],
+    });
+    expect(seen[2]!.services).toHaveLength(20);
+  });
+});
+
+/* ------------------------------ preflight -------------------------------- */
+
+describe("findDemoRows", () => {
+  it("reports exactly what is still seeded, plus the real-bills blocker", async () => {
+    const fresh = await findDemoRows({ load: async () => seedInput() });
+    expect(fresh.scan.stylists).toEqual([1, 2, 3, 4]);
+    expect(fresh.scan.services).toHaveLength(20);
+    expect(fresh.scan.products).toEqual([1, 2, 3]);
+    expect(fresh.scan.customers).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(fresh.realBills).toBe(false);
+
+    const live = await findDemoRows({
+      load: async () => ({ ...seedInput(), bills: [{ status: "paid" }] }),
+    });
+    expect(live.realBills).toBe(true);
+
+    const emptied = await findDemoRows({
+      load: async () => ({ stylists: [], services: [], products: [], customers: [], bills: [] }),
+    });
+    expect(emptied.scan).toEqual({ stylists: [], services: [], products: [], customers: [] });
+  });
+
+  it("is strictly read-only — no confirm, no backup, no delete", async () => {
+    const r = await findDemoRows({
+      load: async () => seedInput(),
+      confirm: () => {
+        throw new Error("must not ask");
+      },
+      backup: async () => {
+        throw new Error("must not back up");
+      },
+      remove: async () => {
+        throw new Error("must not delete");
+      },
+    });
+    expect(r.scan.customers).toHaveLength(6);
   });
 });
 
@@ -175,6 +277,7 @@ describe("removal wiring", () => {
     const src = read("demoData.ts");
     expect(src).toMatch(/db\.stylists\.delete\(id\)/);
     expect(src).toMatch(/db\.services\.delete\(id\)/);
+    expect(src).toMatch(/db\.products\.delete\(id\)/);
     expect(src).toMatch(/db\.customers\.delete\(id\)/);
     // And the default backup is the local JSON backup, before any delete.
     expect(src).toMatch(/backup: \(\) => downloadLocalBackup\(\)/);
@@ -227,13 +330,29 @@ describe("first-run setup screen wiring", () => {
     expect(src).toMatch(/ownerPin: await hashPin\(pin\), onboarded: true/);
     // finish stays disabled until the PIN is valid AND shop name/phone are set
     expect(src).toMatch(/disabled=\{!valid \|\| !validShop \|\| busy\}/);
-    expect(src).toMatch(/removeDemoData\(\)/); // offers demo removal too
+    // Offers the split demo cleanup, but only as the shared, never-auto-run
+    // card: SetupScreen itself never calls removeDemoData directly.
+    expect(src).toMatch(/<DemoCleanup/);
+    expect(src).not.toMatch(/removeDemoData\(/);
+    expect(src).toMatch(/Demo data \(optional\)/);
+  });
+
+  it("the shared DemoCleanup card starts unticked and disables its button", () => {
+    const src = read("..", "components", "DemoCleanup.tsx");
+    expect(src).toMatch(/useState<RemoveSelection>\(NO_REMOVAL\)/); // nothing preselected
+    expect(src).toMatch(/disabled=\{!ticked \|\| busy\}/);
+    expect(src).toMatch(/findDemoRows\(\)/); // read-only preflight counts
+    expect(src).toMatch(/removeDemoData\(sel\)/); // removal only on explicit click
   });
 
   it("Settings exposes the matching 'Remove demo data' option", () => {
     const src = read("..", "routes", "settings.tsx");
-    expect(src).toMatch(/removeDemoData\(\)/);
-    expect(src).toMatch(/Remove demo data/);
+    expect(src).toMatch(/<DemoCleanup \/>/);
+    // The shared card owns the whole flow now — Settings never calls it.
+    expect(src).not.toMatch(/removeDemoData\(/);
+    expect(src).toMatch(/Demo data/);
+    // …and the copy promises removal only on an explicit tick + confirm.
+    expect(src).toMatch(/Nothing is removed unless you tick its box and confirm/);
     // Still owner-only (the whole page renders inside OwnerOnly).
     expect(src).toMatch(/<OwnerOnly>/);
   });

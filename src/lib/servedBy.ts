@@ -69,6 +69,21 @@ export function isCustomStylist(
 }
 
 /**
+ * The bill-detail / receipt line for whoever served the bill: the distinct
+ * stylist names on its service lines, in first-appearance order —
+ * "Arun, Priya". Undefined when no line carries a stylist, so nothing is
+ * printed rather than an empty label.
+ */
+export function servedByLabel(lines: BillLine[]): string | undefined {
+  const names: string[] = [];
+  for (const l of lines) {
+    const n = l.stylistName;
+    if (n && !names.includes(n)) names.push(n);
+  }
+  return names.length ? names.join(", ") : undefined;
+}
+
+/**
  * The save-block message for lines with no stylist — it must point at the
  * "Served by" chips, because that is the fastest way to fix it.
  */
