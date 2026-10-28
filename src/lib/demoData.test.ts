@@ -1,326 +1,273 @@
-import { describe, expect, it } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
+import { describe, expect, it } from "vitest";
+
 import {
-  ALL_REMOVALS,
-  DEMO_CUSTOMERS,
-  DEMO_PRODUCTS,
-  DEMO_SERVICES,
-  DEMO_STAFF,
-  NO_REMOVAL,
-  findDemoRows,
-  hasRealBills,
-  removeDemoData,
+  defaultRestoreDeps,
+  normalizeName,
   restoreReport,
   restoreStarterCatalog,
-  scanDemoData,
-  type DemoScan,
+  type RestoreDeps,
 } from "./demoData";
+import { STARTER_CATEGORIES, STARTER_PRODUCTS, STARTER_SERVICES, STARTER_STYLISTS } from "./db";
 
 /**
- * Demo data on a new salon:
- *  - detection of the seeded rows (and ONLY those),
- *  - refusal when real bills exist, backup-before-delete, confirmation,
- *  - deletions ride the normal Dexie delete path → sync tombstones,
- *  - first-run setup screen + Settings option wiring,
- *  - the demo constants stay in sync with the seed in db.ts.
+ * The barber's build: no demo-cleanup action anywhere, no seeded customers,
+ * and the starter catalog still seeds on a fresh setup and can be restored.
  */
 
 const read = (...p: string[]) => fs.readFileSync(path.join(__dirname, ...p), "utf8");
 
-/* ------------------------------- fixtures -------------------------------- */
+/* ------------------------- no demo-cleanup UI ---------------------------- */
 
-const seedInput = () => ({
-  stylists: DEMO_STAFF.map((s) => ({ ...s, commissionPct: 10, active: true })),
-  services: DEMO_SERVICES.map((s) => ({
-    ...s,
-    categoryId: 1,
-    price: 300,
-    duration: 30,
-    gstRate: 18,
-    commissionPct: 10,
-    active: true,
-  })),
-  products: DEMO_PRODUCTS.map((p) => ({ ...p, price: 450, stock: 12, lowStock: 3 })),
-  customers: DEMO_CUSTOMERS.map((c) => ({ ...c, createdAt: 1 })),
-  bills: [] as { status: "paid" | "held" | "cancelled" }[],
-});
-
-/* --------------------------------- scan ---------------------------------- */
-
-describe("scanDemoData", () => {
-  it("finds every seeded demo row on a brand-new salon", () => {
-    const scan = scanDemoData(seedInput());
-    expect(scan.stylists).toEqual([1, 2, 3, 4]);
-    expect(scan.services).toHaveLength(20);
-    expect(scan.services).toContain(1);
-    expect(scan.services).toContain(20);
-    expect(scan.customers).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(scan.products).toEqual([1, 2, 3]);
+describe("no demo-cleanup option anywhere", () => {
+  it("Settings has no 'Demo data' card, no tick boxes, no removal button", () => {
+    const src = read("..", "routes", "settings.tsx");
+    expect(src).not.toContain("DemoCleanup");
+    expect(src).not.toContain("Demo data");
+    expect(src).not.toContain("removeDemoData");
+    expect(src).not.toContain("Remove the ticked");
+    expect(src).not.toContain("starter staff");
+    expect(src).not.toContain("findDemoRows");
+    // Still owner-only.
+    expect(src).toMatch(/<OwnerOnly>/);
   });
 
-  it("keeps rows the salon has renamed, repurposed or added (real data)", () => {
-    const scan = scanDemoData({
-      stylists: [
-        { id: 1, name: "Raj (was Karthik)", phone: "9840011111" }, // renamed → keep
-        { id: 5, name: "Karthik", phone: "9988776655" }, // real staff named Karthik → keep
-        { id: 2, name: "Priya", phone: "9840022222" }, // untouched demo → delete
-      ],
-      services: [
-        { id: 1, name: "Men's Haircut" }, // untouched demo → delete
-        { id: 21, name: "Men's Haircut" }, // real service reusing the name → keep
-        { id: 2, name: "Beard highlights" }, // demo id repurposed with a new name → keep
-      ],
-      customers: [
-        { id: 1, name: "Lakshmi Narayanan", phone: "9841234567" }, // demo → delete
-        { id: 7, name: "Meena Ramesh", phone: "9000000000" }, // real, same name → keep
-      ],
-      products: [
-        { id: 1, name: "L'Oréal Shampoo 250ml" }, // demo → delete
-        { id: 4, name: "Matrix Hair Serum" }, // real product reusing the name → keep
-      ],
-    });
-    expect(scan).toEqual({ stylists: [2], services: [1], products: [1], customers: [1] });
+  it("Settings still offers Restore starter catalog (shared helper kept)", () => {
+    const src = read("..", "routes", "settings.tsx");
+    expect(src).toContain("restoreStarterCatalog");
+    expect(src).toContain('data-testid="restore-starter"');
+    expect(src).toContain("Restore starter catalog");
   });
 
-  it("returns empty scans when there is no demo data left", () => {
-    expect(scanDemoData({ stylists: [], services: [], products: [], customers: [] })).toEqual({
-      stylists: [],
-      services: [],
-      products: [],
-      customers: [],
-    });
+  it("the setup screen has no demo-cleanup step", () => {
+    const src = read("..", "components", "SetupScreen.tsx");
+    expect(src).not.toContain("DemoCleanup");
+    expect(src).not.toContain("Demo data");
+    expect(src).not.toContain("removeDemoData");
+    expect(src).not.toContain("findDemoRows");
   });
-});
 
-/* ---------------------------- real-bill guard ---------------------------- */
+  it("the DemoCleanup component is gone and nothing imports it", () => {
+    expect(fs.existsSync(path.join(__dirname, "..", "components", "DemoCleanup.tsx"))).toBe(false);
+    const walk = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+        const p = path.join(dir, e.name);
+        return e.isDirectory() ? walk(p) : /\.(ts|tsx)$/.test(e.name) ? [p] : [];
+      });
+    for (const file of walk(path.join(__dirname, ".."))) {
+      if (/\.test\.(ts|tsx)$/.test(file)) continue; // this file names it deliberately
+      expect(fs.readFileSync(file, "utf8")).not.toMatch(/DemoCleanup/);
+    }
+  });
 
-describe("hasRealBills", () => {
-  it("refuses when any paid or cancelled bill exists", () => {
-    expect(hasRealBills([])).toBe(false);
-    expect(hasRealBills([{ status: "held" }])).toBe(false); // device-local draft
-    expect(hasRealBills([{ status: "paid" }])).toBe(true);
-    expect(hasRealBills([{ status: "held" }, { status: "cancelled" }])).toBe(true);
+  it("demoData.ts exposes restore only — no removal/scanning API, no deletes", () => {
+    const src = read("demoData.ts");
+    for (const gone of [
+      "removeDemoData",
+      "scanDemoData",
+      "findDemoRows",
+      "hasRealBills",
+      "ALL_REMOVALS",
+      "NO_REMOVAL",
+      "DEMO_CUSTOMERS",
+      "DEMO_STAFF",
+      "DEMO_SERVICES",
+      "DEMO_PRODUCTS",
+    ])
+      expect(src).not.toContain(gone);
+    expect(src).not.toMatch(/\.delete\(/);
+    // Its public surface is exactly the restore helpers + shared name normaliser.
+    const exported = [...src.matchAll(/export (?:async )?(?:function|const|type) (\w+)/g)].map(
+      (m) => m[1],
+    );
+    expect(exported.sort()).toEqual([
+      "RestoreCounts",
+      "RestoreDeps",
+      "defaultRestoreDeps",
+      "normalizeName",
+      "restoreReport",
+      "restoreStarterCatalog",
+    ]);
   });
 });
 
-/* ------------------------------- the flow -------------------------------- */
+/* ------------------------ fresh-setup seeding ---------------------------- */
 
-function harness(overrides?: {
-  bills?: { status: "paid" | "held" | "cancelled" }[];
-  confirm?: boolean;
-  backupFails?: boolean;
-}) {
-  const calls: string[] = [];
-  let scanSeen: DemoScan | null = null;
-  const result = removeDemoData(ALL_REMOVALS, {
-    load: async () => ({ ...seedInput(), bills: overrides?.bills ?? [] }),
-    confirm: () => {
-      calls.push("confirm");
-      return overrides?.confirm ?? true;
-    },
-    backup: async () => {
-      if (overrides?.backupFails) throw new Error("disk full");
-      calls.push("backup");
-    },
-    remove: async (scan) => {
-      calls.push("remove");
-      scanSeen = scan;
-    },
-  });
-  return { calls, scanSeen: () => scanSeen, result };
-}
+describe("fresh setup: starter catalog yes, fake customers no", () => {
+  const dbSrc = read("db.ts");
+  const seedAt = dbSrc.indexOf("export async function seedIfEmpty");
+  const seed = dbSrc.slice(seedAt, dbSrc.indexOf("billNumberFor", seedAt));
 
-describe("removeDemoData", () => {
-  it("refuses when real bills exist — no confirmation, no backup, no deletion", async () => {
-    const h = harness({ bills: [{ status: "paid" }] });
-    const r = await h.result;
-    expect(r).toEqual({ ok: false, reason: "real-bills" });
-    expect(h.calls).toHaveLength(0);
-    expect(h.scanSeen()).toBeNull();
+  it("seedIfEmpty bulkPuts the starter categories/services/products/stylists", () => {
+    for (const c of [
+      "STARTER_CATEGORIES.map(",
+      "STARTER_SERVICES.map(",
+      "STARTER_PRODUCTS.map(",
+      "STARTER_STYLISTS.map(",
+    ])
+      expect(seed).toContain(c);
   });
 
-  it("downloads the automatic backup BEFORE deleting, after confirmation", async () => {
-    const h = harness();
-    const r = await h.result;
-    expect(r.ok).toBe(true);
-    // Order: confirm → backup → remove (backup strictly before the deletes).
-    expect(h.calls).toEqual(["confirm", "backup", "remove"]);
-    const scan = h.scanSeen()!;
-    expect(scan.stylists).toHaveLength(4);
-    expect(scan.services).toHaveLength(20);
-    expect(scan.products).toHaveLength(3);
-    expect(scan.customers).toHaveLength(6);
+  it("seedIfEmpty never writes customers", () => {
+    expect(seed).not.toMatch(/db\.customers/);
+    expect(seed).not.toMatch(/customers\.bulkPut/);
+    expect(dbSrc).not.toMatch(/DEMO_CUSTOMERS/);
   });
 
-  it("aborts when the backup fails — nothing is deleted", async () => {
-    const h = harness({ backupFails: true });
-    const r = await h.result;
-    expect(r).toEqual({ ok: false, reason: "backup-failed" });
-    expect(h.calls).toEqual(["confirm"]); // asked, backed up (threw), remove never ran
-    expect(h.scanSeen()).toBeNull();
+  it("the starter constants are non-empty and self-consistent", () => {
+    expect(STARTER_CATEGORIES.length).toBeGreaterThan(0);
+    expect(STARTER_SERVICES.length).toBeGreaterThan(0);
+    expect(STARTER_PRODUCTS.length).toBeGreaterThan(0);
+    expect(STARTER_STYLISTS.length).toBeGreaterThan(0);
+    for (const s of STARTER_SERVICES)
+      expect(STARTER_CATEGORIES).toContain(s.category as (typeof STARTER_CATEGORIES)[number]);
+    // every starter row is a complete, plausible record
+    for (const s of STARTER_SERVICES) {
+      expect(s.price).toBeGreaterThan(0);
+      expect(s.duration).toBeGreaterThan(0);
+    }
+    for (const p of STARTER_PRODUCTS) expect(p.price).toBeGreaterThan(0);
   });
 
-  it("aborts when the owner declines the confirmation", async () => {
-    const h = harness({ confirm: false });
-    const r = await h.result;
-    expect(r).toEqual({ ok: false, reason: "declined" });
-    expect(h.calls).toEqual(["confirm"]); // confirmation asked, then nothing
-    expect(h.scanSeen()).toBeNull();
+  it("only new installs are seeded — an existing salon is never overwritten", () => {
+    expect(seed).toMatch(/if \(await db\.settings\.get\(1\)\) return;/);
+    // double-check inside the transaction too
+    expect(seed).toMatch(
+      /if \(await db\.settings\.get\(1\)\) return;\s*\n\s*await db\.settings\.put/,
+    );
   });
+});
 
-  it("reports 'no-demo' when there is nothing to remove", async () => {
-    const r = await removeDemoData(ALL_REMOVALS, {
-      load: async () => ({
-        stylists: [],
-        services: [],
-        products: [],
-        customers: [],
-        bills: [],
-      }),
-      confirm: () => true,
-      backup: async () => {},
-      remove: async () => {
-        throw new Error("must not run");
-      },
-    });
-    expect(r).toEqual({ ok: false, reason: "no-demo" });
-  });
+/* ------------------------- restore starter ------------------------------- */
 
-  it("does nothing at all when no box is ticked", async () => {
-    const r = await removeDemoData(NO_REMOVAL, {
-      load: async () => {
-        throw new Error("must not even load");
-      },
-      confirm: () => true,
-      backup: async () => {},
-      remove: async () => {
-        throw new Error("must not run");
-      },
-    });
-    expect(r).toEqual({ ok: false, reason: "nothing-selected" });
-  });
-
-  it("each ticked box removes only its own rows", async () => {
-    const seen: DemoScan[] = [];
-    const deps = {
-      load: async () => seedInput(),
-      confirm: () => true,
-      backup: async () => {},
-      remove: async (scan: DemoScan) => {
-        seen.push(scan);
+describe("restoreStarterCatalog", () => {
+  function harness(existing: {
+    categories: { id?: number | undefined; name: string }[];
+    services: { name: string; categoryId: number }[];
+    products: { name: string }[];
+    stylists: { name: string }[];
+  }) {
+    const calls: { kind: string; row: unknown }[] = [];
+    const deps: Partial<RestoreDeps> = {
+      load: async () => existing,
+      create: {
+        category: async (name, order) => {
+          calls.push({ kind: "category", row: { name, order } });
+          return existing.categories.length + 1 + calls.filter((c) => c.kind === "category").length;
+        },
+        service: async (s) => {
+          calls.push({ kind: "service", row: s });
+        },
+        product: async (p) => {
+          calls.push({ kind: "product", row: p });
+        },
+        stylist: async (s) => {
+          calls.push({ kind: "stylist", row: s });
+        },
       },
     };
-    await removeDemoData({ ...NO_REMOVAL, customers: true }, deps);
-    await removeDemoData({ ...NO_REMOVAL, staff: true }, deps);
-    await removeDemoData({ ...NO_REMOVAL, catalog: true }, deps);
-    expect(seen[0]).toEqual({
-      stylists: [],
+    return { calls, deps, of: (kind: string) => calls.filter((c) => c.kind === kind) };
+  }
+
+  it("adds every missing starter row to an empty catalog", async () => {
+    const h = harness({ categories: [], services: [], products: [], stylists: [] });
+    const counts = await restoreStarterCatalog(h.deps);
+    expect(counts.categories).toBe(STARTER_CATEGORIES.length);
+    expect(counts.services).toBe(STARTER_SERVICES.length);
+    expect(counts.products).toBe(STARTER_PRODUCTS.length);
+    expect(counts.stylists).toBe(STARTER_STYLISTS.length);
+    expect(restoreReport(counts)).toBe(
+      `Added ${counts.services} services, ${counts.products} products, ${counts.stylists} stylists`,
+    );
+  });
+
+  it("a second run adds nothing (idempotent)", async () => {
+    const h = harness({ categories: [], services: [], products: [], stylists: [] });
+    const firstCounts = await restoreStarterCatalog(h.deps);
+    expect(firstCounts.services).toBe(STARTER_SERVICES.length);
+    // catalog now has everything the first run created — model that:
+    const second = harness({
+      categories: STARTER_CATEGORIES.map((name, i) => ({ id: i + 1, name })),
+      services: STARTER_SERVICES.map((s) => ({ name: s.name, categoryId: 1 })),
+      products: STARTER_PRODUCTS.map((p) => ({ name: p.name })),
+      stylists: STARTER_STYLISTS.map((s) => ({ name: s.name })),
+    });
+    const counts = await restoreStarterCatalog(second.deps);
+    expect(counts).toEqual({ categories: 0, services: 0, products: 0, stylists: 0 });
+    expect(second.calls).toHaveLength(0);
+    expect(h.calls.length).toBeGreaterThan(0); // sanity: first run did work
+  });
+
+  it("never edits or deletes rows the salon already has", async () => {
+    const h = harness({
+      categories: [{ id: 1, name: "hair" }], // case-insensitive match
+      services: [{ name: "Men's Haircut", categoryId: 1 }],
+      products: [{ name: "L'Oréal Shampoo 250ml" }],
+      stylists: [{ name: "  karthik " }], // space+case-insensitive match
+    });
+    const counts = await restoreStarterCatalog(h.deps);
+    // matched rows are never among the created ones:
+    expect(counts.stylists).toBe(STARTER_STYLISTS.length - 1); // "Karthik" matched
+    expect(counts.services).toBe(STARTER_SERVICES.length - 1); // "Men's Haircut" matched
+    expect(counts.products).toBe(STARTER_PRODUCTS.length - 1); // shampoo matched
+    // the one starter category the salon already had ("hair") is not re-created…
+    expect(h.of("category").map((c) => (c.row as { name: string }).name)).not.toContain("Hair");
+    // …but the four genuinely missing ones are:
+    const madeCategories = h.of("category").map((c) => (c.row as { name: string }).name);
+    expect(madeCategories).toHaveLength(STARTER_CATEGORIES.length - 1);
+    for (const name of STARTER_CATEGORIES)
+      if (name !== "Hair") expect(madeCategories).toContain(name);
+    expect(h.of("service").map((c) => (c.row as { name: string }).name)).not.toContain(
+      "Men's Haircut",
+    );
+    expect(h.of("stylist").map((c) => (c.row as { name: string }).name)).not.toContain("Karthik");
+    // RestoreDeps has no delete capability by type or shape.
+    expect(Object.keys(defaultRestoreDeps).sort()).toEqual(["create", "load"]);
+    expect(JSON.stringify(defaultRestoreDeps)).not.toContain("delete");
+  });
+
+  it("never touches bills (there is no bills access at all)", () => {
+    expect(read("demoData.ts")).not.toContain("db.bills");
+  });
+
+  it("restored stylists come back without a PIN", async () => {
+    const h = harness({
+      categories: [],
       services: [],
       products: [],
-      customers: [1, 2, 3, 4, 5, 6],
-    });
-    expect(seen[1]).toEqual({ stylists: [1, 2, 3, 4], services: [], products: [], customers: [] });
-    expect(seen[2]).toEqual({
       stylists: [],
-      services: expect.any(Array),
-      products: [1, 2, 3],
-      customers: [],
     });
-    expect(seen[2]!.services).toHaveLength(20);
+    await restoreStarterCatalog(h.deps);
+    for (const c of h.of("stylist")) expect(c.row).not.toHaveProperty("pin");
+  });
+
+  it("a service whose starter category was deleted entirely is skipped, not orphaned", async () => {
+    const h = harness({
+      categories: [], // no categories at all
+      services: [],
+      products: [],
+      stylists: [],
+    });
+    const counts = await restoreStarterCatalog(h.deps);
+    // categories are created first, so all services should still be placed
+    expect(counts.categories).toBe(STARTER_CATEGORIES.length);
+    expect(counts.services).toBe(STARTER_SERVICES.length);
+  });
+
+  it("normalizeName collapses spaces and case for matching", () => {
+    expect(normalizeName("  Men's   Haircut ")).toBe("men's haircut");
+    expect(normalizeName("ARUN")).toBe("arun");
   });
 });
 
-/* ------------------------------ preflight -------------------------------- */
+/* ------------------------- gate wiring (kept) ---------------------------- */
 
-describe("findDemoRows", () => {
-  it("reports exactly what is still seeded, plus the real-bills blocker", async () => {
-    const fresh = await findDemoRows({ load: async () => seedInput() });
-    expect(fresh.scan.stylists).toEqual([1, 2, 3, 4]);
-    expect(fresh.scan.services).toHaveLength(20);
-    expect(fresh.scan.products).toEqual([1, 2, 3]);
-    expect(fresh.scan.customers).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(fresh.realBills).toBe(false);
-
-    const live = await findDemoRows({
-      load: async () => ({ ...seedInput(), bills: [{ status: "paid" }] }),
-    });
-    expect(live.realBills).toBe(true);
-
-    const emptied = await findDemoRows({
-      load: async () => ({ stylists: [], services: [], products: [], customers: [], bills: [] }),
-    });
-    expect(emptied.scan).toEqual({ stylists: [], services: [], products: [], customers: [] });
-  });
-
-  it("is strictly read-only — no confirm, no backup, no delete", async () => {
-    const r = await findDemoRows({
-      load: async () => seedInput(),
-      confirm: () => {
-        throw new Error("must not ask");
-      },
-      backup: async () => {
-        throw new Error("must not back up");
-      },
-      remove: async () => {
-        throw new Error("must not delete");
-      },
-    });
-    expect(r.scan.customers).toHaveLength(6);
-  });
-});
-
-/* --------------------------- wiring + tombstones -------------------------- */
-
-describe("removal wiring", () => {
-  it("the default delete path uses per-row Dexie deletes (the hooked tombstone path)", () => {
-    const src = read("demoData.ts");
-    expect(src).toMatch(/db\.stylists\.delete\(id\)/);
-    expect(src).toMatch(/db\.services\.delete\(id\)/);
-    expect(src).toMatch(/db\.products\.delete\(id\)/);
-    expect(src).toMatch(/db\.customers\.delete\(id\)/);
-    // And the default backup is the local JSON backup, before any delete.
-    expect(src).toMatch(/backup: \(\) => downloadLocalBackup\(\)/);
-  });
-
-  it("db.ts hooks those deletions into the outbox and the client pushes op:del", () => {
-    const dbSrc = read("db.ts");
-    // Deleting hooks enqueue every synced table (stylists/services/customers
-    // are in SYNCED_TABLES)…
-    expect(dbSrc).toMatch(/table\.hook\("deleting"/);
-    const tablesAt = dbSrc.indexOf("SYNCED_TABLES = [");
-    expect(tablesAt).toBeGreaterThan(-1);
-    const tablesBlock = dbSrc.slice(tablesAt, dbSrc.indexOf("]", tablesAt));
-    for (const t of ["stylists", "services", "customers"]) expect(tablesBlock).toContain(`"${t}"`);
-    // …and a queued row that no longer exists pushes as a tombstone.
-    const clientSrc = read("syncClient.ts");
-    expect(clientSrc).toMatch(/return \{ t: table, id: q\.id, op: "del" \}/);
-  });
-
-  it("the demo constants match the seed in db.ts (no drift)", () => {
-    const dbSrc = read("db.ts");
-    for (const s of DEMO_STAFF) {
-      expect(dbSrc).toContain(`name: "${s.name}"`);
-      expect(dbSrc).toContain(`"${s.phone}"`);
-    }
-    for (const s of DEMO_SERVICES) expect(dbSrc).toContain(`"${s.name}"`);
-    for (const c of DEMO_CUSTOMERS) {
-      expect(dbSrc).toContain(`"${c.name}"`);
-      expect(dbSrc).toContain(`"${c.phone}"`);
-    }
-  });
-});
-
-/* --------------------------- setup screen wiring -------------------------- */
-
-describe("first-run setup screen wiring", () => {
+describe("gate + setup wiring", () => {
   it("AppShell delegates both gates to SalonGate (the cloud decides, not the seed)", () => {
     const src = read("..", "components", "AppShell.tsx");
-    // Setup / connect / first-sync moved out of AppShell: SalonGate decides
-    // them from the cloud probe + first pull, never from the local seed.
     expect(src).toMatch(/<SalonGate>\{children\}<\/SalonGate>/);
     expect(src).not.toMatch(/needsSetup|<OwnerOnly>|<SetupScreen \/>|<CloudGate>/);
-    // Settings route stays outside the setup gate (recovery path).
     expect(src).toMatch(/recovery \?/);
   });
 
@@ -328,42 +275,11 @@ describe("first-run setup screen wiring", () => {
     const src = read("..", "components", "SetupScreen.tsx");
     expect(src).toMatch(/isValidNewPin\(pin\)/);
     expect(src).toMatch(/ownerPin: await hashPin\(pin\), onboarded: true/);
-    // finish stays disabled until the PIN is valid AND shop name/phone are set
     expect(src).toMatch(/disabled=\{!valid \|\| !validShop \|\| busy\}/);
-    // Offers the split demo cleanup, but only as the shared, never-auto-run
-    // card: SetupScreen itself never calls removeDemoData directly.
-    expect(src).toMatch(/<DemoCleanup/);
-    expect(src).not.toMatch(/removeDemoData\(/);
-    expect(src).toMatch(/Demo data \(optional\)/);
   });
 
-  it("the shared DemoCleanup card starts unticked and disables its button", () => {
-    const src = read("..", "components", "DemoCleanup.tsx");
-    expect(src).toMatch(/useState<RemoveSelection>\(NO_REMOVAL\)/); // nothing preselected
-    expect(src).toMatch(/disabled=\{!ticked \|\| busy\}/);
-    expect(src).toMatch(/findDemoRows\(\)/); // read-only preflight counts
-    expect(src).toMatch(/removeDemoData\(sel\)/); // removal only on explicit click
-  });
-
-  it("Settings exposes the matching 'Remove demo data' option", () => {
-    const src = read("..", "routes", "settings.tsx");
-    expect(src).toMatch(/<DemoCleanup \/>/);
-    // The shared card owns the whole flow now — Settings never calls it.
-    expect(src).not.toMatch(/removeDemoData\(/);
-    expect(src).toMatch(/Demo data/);
-    // …and the copy promises removal only on an explicit tick + confirm.
-    expect(src).toMatch(/Nothing is removed unless you tick its box and confirm/);
-    // Still owner-only (the whole page renders inside OwnerOnly).
-    expect(src).toMatch(/<OwnerOnly>/);
-  });
-
-  it("the fresh-device / first-sync path is untouched (existing suites cover it)", () => {
-    // This module performs ordinary row deletes + a settings.update only — no
-    // firstSync/replaceAll/cursor logic lives here or in the setup screen.
-    const demoSrc = read("demoData.ts");
-    const setupSrc = read("..", "components", "SetupScreen.tsx");
-    for (const src of [demoSrc, setupSrc]) {
+  it("the fresh-device / first-sync path is untouched", () => {
+    for (const src of [read("demoData.ts"), read("..", "components", "SetupScreen.tsx")])
       expect(src).not.toMatch(/firstSync|replaceAll|sb-sync/);
-    }
   });
 });

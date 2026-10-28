@@ -21,3 +21,19 @@ export function normalizePhoneInput(raw: string): string {
 export function isValidPhone(raw: string): boolean {
   return /^\d{10}$/.test(raw);
 }
+
+/** The inline message every customer phone field shows when it is not valid. */
+export const PHONE_ERROR = "Enter a 10-digit mobile number.";
+
+/**
+ * Does this string look like phone input rather than a name?
+ *
+ * Used by the bill sheet's combined "Customer name or phone" field: names
+ * (anything holding a letter) are left completely alone, while anything made
+ * only of phone characters — digits plus the separators/`+` people paste — is
+ * normalised by `normalizePhoneInput` as it is typed or pasted.
+ */
+export function isPhoneShaped(raw: string): boolean {
+  const t = raw.trim();
+  return t.length > 0 && /^[+\d][\d\s\-().]*$/.test(t);
+}

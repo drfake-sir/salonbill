@@ -35,6 +35,7 @@ import {
   type ReceiptInfo,
 } from "@/lib/db";
 import { computeTotals, inr, typedCustomerName } from "@/lib/billing";
+import { PHONE_ERROR, isPhoneShaped, isValidPhone, normalizePhoneInput } from "@/lib/phoneInput";
 import { defaultStylistIdFor, stylistNameFor, unattributedServiceLines } from "@/lib/attribution";
 import {
   applyServedBy,
@@ -286,6 +287,12 @@ function Billing() {
     if (savingRef.current) return; // ignore repeated Save taps / F9 auto-repeat
     if (!lines.length) {
       toast.error("Add a service first");
+      return;
+    }
+    // A phone number typed into the customer field must be COMPLETE: a
+    // half-typed number is neither saved nor silently dropped.
+    if (isPhoneShaped(custQ) && !isValidPhone(custQ)) {
+      toast.error(PHONE_ERROR);
       return;
     }
     // Every service line must name the stylist who performed it. Earnings,
@@ -597,7 +604,13 @@ function Billing() {
               id="bill-customer"
               aria-label="Customer name or phone"
               value={custQ}
-              onChange={(e) => setCustQ(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                // Phone-shaped input is normalised as it is typed or pasted:
+                // digits only, a +91 / 91 / 0 prefix stripped, capped at 10.
+                // Anything with a letter is a name and passes through as is.
+                setCustQ(isPhoneShaped(v) ? normalizePhoneInput(v) : v);
+              }}
               placeholder="Customer name or phone"
               maxLength={60}
               inputMode={/^\d+$/.test(custQ) || custQ === "" ? "numeric" : "text"}
@@ -636,6 +649,11 @@ function Billing() {
               </div>
             )}
           </div>
+          {isPhoneShaped(custQ) && !isValidPhone(custQ) && (
+            <p data-testid="customer-phone-error" className="mt-1 text-xs text-destructive">
+              {PHONE_ERROR}
+            </p>
+          )}
           <p className="mt-1 text-xs text-muted-foreground">
             Add a phone to save the customer and send on WhatsApp
           </p>

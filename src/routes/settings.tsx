@@ -24,7 +24,6 @@ import {
   type Settings,
 } from "@/lib/db";
 import { restoreReport, restoreStarterCatalog } from "@/lib/demoData";
-import { DemoCleanup } from "@/components/DemoCleanup";
 import { printBill } from "@/lib/print";
 import { OwnerOnly } from "@/components/PinGate";
 import { ReceiptView } from "@/components/ReceiptView";
@@ -272,7 +271,6 @@ function SettingsPage() {
         </section>
 
         <CloudBackupCard />
-        <DemoDataCard />
         <RestoreStarterCard />
         <BackupHygieneCard onRestoreFile={restore} fileRef={fileRef} />
         <DeviceNameCard />
@@ -310,26 +308,6 @@ function SettingsPage() {
         </PrintPortal>
       </div>
     </div>
-  );
-}
-
-/* ----------------------------- demo data --------------------------------- */
-
-/**
- * Demo/starter cleanup: three separate, unticked-by-default actions in one
- * card (see `DemoCleanup`), each with its own confirmation, an automatic
- * local backup first and the real-bills refusal. Deletions sync as tombstones.
- */
-function DemoDataCard() {
-  return (
-    <section className="rounded-3xl bg-card p-5 shadow-soft">
-      <h2 className="mb-1 font-bold">Demo data</h2>
-      <p className="mb-3 text-sm text-muted-foreground">
-        New salons start with demo staff (Karthik, Priya, Arun, Divya), starter services and
-        products, and fake customers. Nothing is removed unless you tick its box and confirm.
-      </p>
-      <DemoCleanup />
-    </section>
   );
 }
 

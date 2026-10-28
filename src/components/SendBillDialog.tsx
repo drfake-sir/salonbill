@@ -28,7 +28,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
-import { isValidPhone, normalizePhoneInput } from "@/lib/phoneInput";
+import { isValidPhone, normalizePhoneInput, PHONE_ERROR } from "@/lib/phoneInput";
 
 export function SendBillDialog({
   bill,
@@ -107,9 +107,7 @@ export function SendBillDialog({
               className="h-11 w-full min-w-0 rounded-xl border border-input bg-card px-3 text-base outline-none focus:ring-2 focus:ring-ring"
             />
           </div>
-          {phone.length > 0 && !valid && (
-            <p className="text-xs text-destructive">Enter a 10-digit mobile number.</p>
-          )}
+          {phone.length > 0 && !valid && <p className="text-xs text-destructive">{PHONE_ERROR}</p>}
           {named && (
             <label className="flex cursor-pointer items-center gap-2.5 text-sm">
               <Checkbox

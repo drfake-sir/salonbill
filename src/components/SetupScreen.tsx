@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { db, logAudit } from "@/lib/db";
 import { signInOwner } from "@/lib/lock";
 import { hashPin, isValidNewPin } from "@/lib/pins";
-import { DemoCleanup } from "@/components/DemoCleanup";
 import { prefillShopFields, setupFinishPatch } from "@/lib/shopDefaults";
 
 /**
@@ -16,17 +15,18 @@ import { prefillShopFields, setupFinishPatch } from "@/lib/shopDefaults";
  * sits in front of it: on the first device the owner session is created by
  * FINISHING setup, and on every later device this screen is unreachable.
  *
- * Three jobs before the salon leaves setup:
+ * Two jobs before the salon leaves setup:
  *  1. shop identity — name, phone and (optional) address, pre-filled from
  *     the shop defaults; an install still carrying the old demo receipt
  *     values also adopts GST-off / no-GSTIN / no-review-link on Finish,
  *     while anything customised is never overwritten;
  *  2. set a NEW owner PIN (6-8 digits, PBKDF2-hashed) — so the seeded default
- *     PIN can never stay in use;
- *  3. an OPTIONAL demo-cleanup step (never a gate — Finish setup works
- *     without touching it): remove the seeded demo staff/services/customers in
- *     one step, backup first, refuses if real bills exist — the same action
- *     Settings offers afterwards as "Remove demo data".
+ *     PIN can never stay in use.
+ *
+ * There is deliberately NO demo-data step here (and none in Settings either):
+ * a real salon must never be offered a "remove demo data" action. The starter
+ * catalog seeds as before and is managed from Catalog; customers are never
+ * seeded at all.
  */
 export function SetupScreen() {
   const settings = useLiveQuery(() => db.settings.get(1));
@@ -89,9 +89,8 @@ export function SetupScreen() {
         </div>
         <h1 className="text-xl font-extrabold">Set up your salon</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Three quick steps: your shop details, your own owner PIN (the default one can't stay in
-          use), and — when you're ready — clearing out the demo staff, services and customers we
-          seeded for the trial.
+          Two quick steps: your shop details and your own owner PIN (the default one can't stay in
+          use).
         </p>
 
         <section className="mt-5 space-y-3">
@@ -142,11 +141,6 @@ export function SetupScreen() {
             Stored as a salted PBKDF2 hash and synced to every device. You'll sign in with it from
             now on.
           </p>
-        </section>
-
-        <section className="mt-5">
-          <h2 className="mb-2 font-bold">3 · Demo data (optional)</h2>
-          <DemoCleanup />
         </section>
 
         <button

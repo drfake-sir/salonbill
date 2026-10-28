@@ -153,18 +153,8 @@ vi.mock("sonner", () => {
   return { toast };
 });
 
-// SetupScreen renders the shared DemoCleanup card, whose module reads the
-// seeded starter rows out of @/lib/db (mocked above without those exports)
-// and whose preflight would hit Dexie. Stub the whole card dependency: this
-// suite only decides WHICH gate shows, never what the demo cleanup does.
-vi.mock("@/lib/demoData", () => ({
-  NO_REMOVAL: { customers: false, staff: false, catalog: false },
-  findDemoRows: async () => ({
-    scan: { stylists: [], services: [], products: [], customers: [] },
-    realBills: false,
-  }),
-  removeDemoData: async () => ({ ok: false, reason: "no-demo" }),
-}));
+// SetupScreen offers NO demo-cleanup step any more (a real salon must never
+// see one), so nothing here pulls @/lib/demoData in.
 
 function reset() {
   h.settings = { id: 1, onboarded: false };

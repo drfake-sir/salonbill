@@ -83,6 +83,12 @@ describe("phone normalisation and validation", () => {
     expect(normalizePhoneInput("")).toBe("");
   });
 
+  it("field is numeric-keypad and capped at 10 characters", () => {
+    open(namedBill);
+    expect(phoneInput().getAttribute("inputmode")).toBe("numeric");
+    expect(phoneInput().getAttribute("maxlength")).toBe("10");
+  });
+
   it("accepts exactly 10 digits", () => {
     expect(isValidPhone("9840012345")).toBe(true);
     expect(isValidPhone("984001234")).toBe(false);

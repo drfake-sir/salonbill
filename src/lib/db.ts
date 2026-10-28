@@ -396,7 +396,7 @@ export async function seedIfEmpty() {
   ]);
   await db.transaction(
     "rw",
-    [db.settings, db.categories, db.services, db.products, db.stylists, db.customers],
+    [db.settings, db.categories, db.services, db.products, db.stylists],
     async () => {
       // Another tab may have seeded between our check and this transaction.
 
@@ -437,19 +437,10 @@ export async function seedIfEmpty() {
           pin: staffPins[i],
         })),
       );
-      const now = Date.now();
-      await db.customers.bulkPut(
-        (
-          [
-            ["Lakshmi Narayanan", "9841234567"],
-            ["Senthil Kumar", "9884012345"],
-            ["Meena Ramesh", "9789056789"],
-            ["Vignesh Subramanian", "9962011223"],
-            ["Aishwarya Rajan", "9003344556"],
-            ["Prakash Iyer", "9444066778"],
-          ] as [string, string][]
-        ).map(([name, phone], i) => ({ id: i + 1, name, phone, createdAt: now })),
-      );
+      // NO customers are seeded: a brand-new salon starts with an empty
+      // customer book, so the barber only ever sees people he added himself.
+      // (The starter catalog above is curated data he can manage from the
+      // Catalog screen; fake customers are not.)
     },
   );
 }
