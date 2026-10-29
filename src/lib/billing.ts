@@ -85,3 +85,45 @@ export function billWaText(b: Bill, settings: Settings): string {
     total: inr(b.total),
   });
 }
+
+/** Bill date/time in IST — the salon's timezone, never the device's. */
+const istWhen = (ms: number) =>
+  new Date(ms).toLocaleString("en-IN", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "Asia/Kolkata",
+  });
+
+/**
+ * Plain-text bill for the WhatsApp chat deep link (wa.me?text=…): shop name,
+ * bill number, IST date/time, one "item x qty - amount" line per line, then
+ * discount / tip / payment mode / total / thank-you — and ONLY those: a zero
+ * discount, a zero tip, no payments or a missing shop name simply never
+ * produce a line (no blank rows in the chat).
+ *
+ * Reads the saved bill values as they are: no money is recomputed here.
+ */
+export function waBillMessage(b: Bill, settings: Settings): string {
+  const payments = b.payments.map((p) => p.mode);
+  const rows: (string | null)[] = [
+    settings.salonName,
+    `Bill ${b.number}`,
+    istWhen(b.createdAt),
+    ...b.lines.map((l) => `${l.name} x${l.qty} - ${inr(l.price * l.qty)}`),
+    b.discount > 0 ? `Discount - ${inr(b.discount)}` : null,
+    b.tip > 0 ? `Tip - ${inr(b.tip)}` : null,
+    payments.length ? `Payment - ${payments.join(" + ")}` : null,
+    `Total - ${inr(b.total)}`,
+    "Thank you! 🙏",
+  ];
+  return rows.filter((r): r is string => Boolean(r)).join("\n");
+}
+
+/**
+ * wa.me deep link that opens THIS customer's own chat (91 + the 10 digits)
+ * with the bill pre-filled, or null when the bill has no exactly-10-digit
+ * number — the caller then falls back to the dialog that asks for it.
+ */
+export function waBillLink(b: Bill, settings: Settings): string | null {
+  return waLink(b.customerPhone ?? "", waBillMessage(b, settings));
+}

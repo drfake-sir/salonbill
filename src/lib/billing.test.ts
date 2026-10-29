@@ -1,5 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { computeTotals, inr, waRecipient, waLink, waText, billWaText } from "./billing";
+import {
+  computeTotals,
+  inr,
+  waRecipient,
+  waLink,
+  waText,
+  billWaText,
+  waBillLink,
+  waBillMessage,
+} from "./billing";
 import { askDeviceName, validateBackup, billNumberFor, StockShortageError } from "./db";
 import type { Bill, Settings } from "./db";
 
@@ -157,5 +166,107 @@ describe("askDeviceName", () => {
         throw new Error("x");
       }),
     ).not.toBe("");
+  });
+});
+
+/* -------------------- wa.me chat deep link (open chat) -------------------- */
+
+const shop = { id: 1, salonName: "Glow Studio" } as Settings;
+
+/** 05 Jan 2026, 04:00 UTC = 09:30 IST (+05:30). */
+const chatBill = {
+  id: 7,
+  number: "SB-0042",
+  createdAt: Date.UTC(2026, 0, 5, 4, 0),
+  status: "paid",
+  customerName: "Asha",
+  customerPhone: "9840012345",
+  lines: [
+    { key: "a", kind: "service", refId: 1, name: "Haircut", price: 600, qty: 2 },
+    { key: "b", kind: "product", refId: 2, name: "Shampoo", price: 250, qty: 1 },
+  ],
+  discountType: "flat",
+  discountValue: 50,
+  subtotal: 1450,
+  discount: 50,
+  cgst: 0,
+  sgst: 0,
+  tip: 20,
+  total: 1420,
+  payments: [
+    { mode: "Cash", amount: 420 },
+    { mode: "UPI", amount: 1000 },
+  ],
+} as unknown as Bill;
+
+const bareBill = { ...chatBill, discount: 0, tip: 0, payments: [] } as Bill;
+
+describe("waBillMessage — the text that lands in the chat", () => {
+  it("carries shop, bill number, IST date/time, one line per item, money and thanks", () => {
+    const text = waBillMessage(chatBill, shop);
+    const rows = text.split("\n");
+    expect(rows[0]).toBe("Glow Studio");
+    expect(rows[1]).toBe("Bill SB-0042");
+    // 04:00 UTC renders as 09:30 in IST, never as the device's local time.
+    expect(rows[2]).toMatch(/9:30/);
+    expect(rows[2]).not.toMatch(/4:00/);
+    expect(rows[3]).toBe("Haircut x2 - ₹1,200");
+    expect(rows[4]).toBe("Shampoo x1 - ₹250");
+    expect(text).toContain("Discount - ₹50");
+    expect(text).toContain("Tip - ₹20");
+    expect(text).toContain("Payment - Cash + UPI");
+    expect(text).toContain("Total - ₹1,420");
+    expect(text).toContain("Thank you! 🙏");
+  });
+
+  it("hides empty lines — no discount, no tip, no payments, no blank rows", () => {
+    const text = waBillMessage(bareBill, shop);
+    expect(text).not.toContain("Discount");
+    expect(text).not.toContain("Tip");
+    expect(text).not.toContain("Payment");
+    expect(text).not.toContain("\n\n"); // no gaps where a hidden line was
+    expect(text.split("\n").every((r) => r.trim().length > 0)).toBe(true);
+    // What is always shown stays shown.
+    expect(text).toContain("Glow Studio");
+    expect(text).toContain("Total - ₹1,420");
+  });
+
+  it("drops the shop line when the salon name is blank", () => {
+    const text = waBillMessage(chatBill, { id: 1, salonName: "" } as Settings);
+    expect(text.startsWith("Bill SB-0042")).toBe(true);
+    expect(text).not.toContain("\n\n");
+  });
+
+  it("only reads the saved bill — the total is never recomputed", () => {
+    // Deliberately "wrong" money: the message must echo it, not fix it.
+    expect(waBillMessage({ ...chatBill, total: 4242 } as Bill, shop)).toContain("Total - ₹4,242");
+  });
+});
+
+describe("waBillLink — builds the deep link or nothing at all", () => {
+  it("builds https://wa.me/91 + the 10 digits", () => {
+    expect(waBillLink(chatBill, shop)).toMatch(/^https:\/\/wa\.me\/919840012345\?text=/);
+  });
+
+  it("percent-encodes the text: newlines arrive as %0A, never raw", () => {
+    const url = waBillLink(chatBill, shop)!;
+    expect(url).toContain("%0A");
+    expect(url.slice(url.indexOf("?text=")).includes("\n")).toBe(false);
+    const decoded = decodeURIComponent(url.split("?text=")[1] ?? "");
+    expect(decoded).toBe(waBillMessage(chatBill, shop));
+    expect(decoded).toContain("Glow Studio");
+    expect(decoded).toContain("Haircut x2 - ₹1,200");
+  });
+
+  it("returns null — no URL is built — for an unusable number", () => {
+    expect(waBillLink({ ...chatBill, customerPhone: "984001234" } as Bill, shop)).toBeNull();
+    expect(waBillLink({ ...chatBill, customerPhone: "98400123456" } as Bill, shop)).toBeNull();
+    expect(waBillLink({ ...chatBill, customerPhone: "" } as Bill, shop)).toBeNull();
+    expect(waBillLink({ ...chatBill, customerPhone: undefined } as Bill, shop)).toBeNull();
+  });
+
+  it("still accepts prefixed stored numbers and normalises to 91 + 10", () => {
+    const url = waBillLink({ ...chatBill, customerPhone: "+91 98400 12345" } as Bill, shop)!;
+    expect(url).toMatch(/^https:\/\/wa\.me\/919840012345\?text=/);
   });
 });

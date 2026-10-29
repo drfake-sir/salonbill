@@ -9,11 +9,13 @@ import {
   Lock,
   MessageCircle,
   Printer,
+  Share2,
   Ban,
 } from "lucide-react";
 import { toast } from "sonner";
 import { db, cancelBill, deviceLabel, type Bill } from "@/lib/db";
-import { inr } from "@/lib/billing";
+import { inr, waBillLink } from "@/lib/billing";
+import { isValidPhone } from "@/lib/phoneInput";
 import { shareBillPdf } from "@/lib/pdf";
 import { printBill } from "@/lib/print";
 import { setSession, useOwner, useSession } from "@/lib/lock";
@@ -58,6 +60,25 @@ function Bills() {
 
   const reprint = (b: Bill) => printBill(setPrinting, b);
 
+  /**
+   * MAIN WhatsApp action on a saved bill: open the customer's OWN chat
+   * (wa.me/91 + the 10 digits, bill text pre-filled) — no "Send to" contact
+   * picker, and it works with numbers that are not in the phone's contacts.
+   * Anything that is not exactly 10 digits keeps the existing dialog that
+   * asks for the number.
+   */
+  const openWa = (b: Bill) => {
+    if (!settings) return;
+    const url = isValidPhone(b.customerPhone ?? "") ? waBillLink(b, settings) : null;
+    if (!url) {
+      setDialogBill(b);
+      return;
+    }
+    // _blank + noopener: never hijack the POS screen away from the till.
+    window.open(url, "_blank", "noopener");
+  };
+
+  /** Second, smaller action: the existing PDF share path — unchanged. */
   const share = async (b: Bill) => {
     if (!settings) return;
     if (!b.customerPhone) {
@@ -149,11 +170,18 @@ function Bills() {
                 </button>
                 <div className="ml-auto flex shrink-0 gap-2">
                   <button
-                    onClick={() => void share(b)}
-                    className="tap grid w-11 place-items-center rounded-xl bg-secondary text-success"
-                    aria-label="Send bill PDF on WhatsApp"
+                    onClick={() => openWa(b)}
+                    className="tap grid w-11 place-items-center rounded-xl bg-success text-success-foreground"
+                    aria-label="Open WhatsApp chat"
                   >
                     <MessageCircle className="size-4" />
+                  </button>
+                  <button
+                    onClick={() => void share(b)}
+                    className="tap grid w-11 place-items-center rounded-xl bg-secondary text-success"
+                    aria-label="Share bill PDF"
+                  >
+                    <Share2 className="size-4" />
                   </button>
                   <button
                     onClick={() => reprint(b)}

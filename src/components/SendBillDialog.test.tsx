@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { SendBillDialog } from "./SendBillDialog";
 import { isValidPhone, normalizePhoneInput } from "@/lib/phoneInput";
@@ -36,7 +36,7 @@ vi.mock("sonner", () => {
 
 /* -------------------------------- fixtures -------------------------------- */
 
-const settings = { id: 1 } as Settings;
+const settings = { id: 1, salonName: "Glow Studio" } as Settings;
 
 const namedBill: Bill = {
   id: 9,
@@ -64,12 +64,21 @@ const open = (bill: Bill) =>
   render(<SendBillDialog bill={bill} settings={settings} stylists={[]} onClose={vi.fn()} />);
 
 const phoneInput = () => screen.getByLabelText("Customer phone") as HTMLInputElement;
-const sendButton = () => screen.getByRole("button", { name: /Send/ });
+const whatsAppButton = () => screen.getByRole("button", { name: "WhatsApp" });
+const sharePdfButton = () => screen.getByRole("button", { name: "Share PDF" });
+
+// Never let a test really navigate anywhere: wa.me is only ever *checked*.
+const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
 
 beforeEach(() => {
   customersUpdate.mockClear();
   customersAdd.mockClear();
   shareBillPdf.mockClear();
+  openSpy.mockClear();
+});
+
+afterAll(() => {
+  openSpy.mockRestore();
 });
 
 /* --------------------------------- tests ---------------------------------- */
@@ -98,15 +107,30 @@ describe("phone normalisation and validation", () => {
 });
 
 describe("dialog behaviour", () => {
-  it("Send stays disabled until exactly 10 digits are typed", () => {
+  it("both buttons stay disabled until exactly 10 digits are typed", () => {
     open(namedBill);
-    expect(sendButton()).toBeDisabled();
+    expect(whatsAppButton()).toBeDisabled();
+    expect(sharePdfButton()).toBeDisabled();
     fireEvent.change(phoneInput(), { target: { value: "98400" } });
     expect(screen.getByText("Enter a 10-digit mobile number.")).toBeTruthy();
-    expect(sendButton()).toBeDisabled();
+    expect(whatsAppButton()).toBeDisabled();
     fireEvent.change(phoneInput(), { target: { value: "9840012345" } });
-    expect(sendButton()).toBeEnabled();
+    expect(whatsAppButton()).toBeEnabled();
+    expect(sharePdfButton()).toBeEnabled();
     expect(screen.queryByText("Enter a 10-digit mobile number.")).toBeNull();
+  });
+
+  it("WhatsApp is the MAIN button and Share PDF is the smaller second one", () => {
+    open(namedBill);
+    const wa = whatsAppButton();
+    const pdf = sharePdfButton();
+    // Main action = primary, larger; PDF = secondary, smaller.
+    expect(wa.className).toContain("bg-primary");
+    expect(wa.className).toContain("px-5");
+    expect(pdf.className).toContain("bg-secondary");
+    expect(pdf.className).toContain("px-4");
+    // …and they are the same footer row, after Cancel.
+    expect(wa.parentElement).toBe(pdf.parentElement);
   });
 
   it("non-digits never enter the field (numeric keypad input)", () => {
@@ -118,7 +142,7 @@ describe("dialog behaviour", () => {
   it("does NOT save the number by default — only shares it", async () => {
     open(namedBill);
     fireEvent.change(phoneInput(), { target: { value: "9840012345" } });
-    fireEvent.click(sendButton());
+    fireEvent.click(sharePdfButton());
     await waitFor(() => expect(shareBillPdf).toHaveBeenCalledTimes(1));
     expect(customersUpdate).not.toHaveBeenCalled();
     expect(customersAdd).not.toHaveBeenCalled();
@@ -133,7 +157,7 @@ describe("dialog behaviour", () => {
     open(namedBill);
     fireEvent.change(phoneInput(), { target: { value: "9840012345" } });
     fireEvent.click(screen.getByLabelText("Save this number to the customer"));
-    fireEvent.click(sendButton());
+    fireEvent.click(sharePdfButton());
     await waitFor(() => expect(shareBillPdf).toHaveBeenCalledTimes(1));
     expect(customersUpdate).toHaveBeenCalledWith(4, { phone: "9840012345" });
     expect(customersAdd).not.toHaveBeenCalled();
@@ -149,7 +173,7 @@ describe("dialog behaviour", () => {
     expect(screen.queryByLabelText("Save this number to the customer")).toBeNull();
     // A walk-in can still be given a number for this send.
     fireEvent.change(phoneInput(), { target: { value: "9840012345" } });
-    expect(sendButton()).toBeEnabled();
+    expect(whatsAppButton()).toBeEnabled();
   });
 
   it("prefills and announces the current number when changing it", () => {
@@ -167,7 +191,57 @@ describe("dialog behaviour", () => {
   });
 });
 
+describe("the WhatsApp button opens the customer's own chat", () => {
+  it("builds wa.me/91 + 10 digits with the bill text and never opens for free", async () => {
+    open(namedBill);
+    fireEvent.change(phoneInput(), { target: { value: "9840012345" } });
+    fireEvent.click(whatsAppButton());
+    await waitFor(() => expect(openSpy).toHaveBeenCalledTimes(1));
+
+    const [url, target, features] = openSpy.mock.calls[0] as [string, string, string];
+    expect(url).toMatch(/^https:\/\/wa\.me\/919840012345\?text=/);
+    expect(target).toBe("_blank");
+    expect(features).toBe("noopener");
+    // Every newline in the message reaches WhatsApp percent-encoded as %0A.
+    expect(url).toContain("%0A");
+    expect(url).not.toContain("\n");
+    expect(decodeURIComponent(url.split("?text=")[1] ?? "")).toContain("Glow Studio");
+    expect(decodeURIComponent(url.split("?text=")[1] ?? "")).toContain("Bill SB-0009");
+    // The WhatsApp action is text-only — the PDF path is a separate button.
+    expect(shareBillPdf).not.toHaveBeenCalled();
+  });
+
+  it("no URL is built while the number is incomplete", () => {
+    open(namedBill);
+    fireEvent.change(phoneInput(), { target: { value: "98400" } });
+    fireEvent.click(whatsAppButton());
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(shareBillPdf).not.toHaveBeenCalled();
+  });
+
+  it("Share PDF keeps the existing share path (never a wa.me deep link)", async () => {
+    open(namedBill);
+    fireEvent.change(phoneInput(), { target: { value: "9840012345" } });
+    fireEvent.click(sharePdfButton());
+    await waitFor(() => expect(shareBillPdf).toHaveBeenCalledTimes(1));
+    expect(openSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe("Bills list wiring", () => {
+  it("main row button is WhatsApp (wa.me), PDF stays the second button", () => {
+    const src = readFileSync(join(__dirname, "..", "routes", "bills.tsx"), "utf8");
+    // The row opens the chat directly through the shared URL builder…
+    expect(src).toContain("waBillLink(b, settings)");
+    expect(src).toContain('isValidPhone(b.customerPhone ?? "")');
+    // …and falls back to the dialog when the number is not exactly 10 digits.
+    expect(src).toContain("setDialogBill(b)");
+    expect(src).toContain('aria-label="Open WhatsApp chat"');
+    // The PDF share path keeps its own, smaller button.
+    expect(src).toContain('aria-label="Share bill PDF"');
+    expect(src).toContain("void share(b)");
+  });
+
   it("opens the dialog instead of the dead-end toast, and never window.prompt", () => {
     // Read the source so this stays honest without rendering the full route.
     const src = readFileSync(join(__dirname, "..", "routes", "bills.tsx"), "utf8");
