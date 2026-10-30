@@ -237,6 +237,9 @@ describe("Bills list wiring", () => {
     // …and falls back to the dialog when the number is not exactly 10 digits.
     expect(src).toContain("setDialogBill(b)");
     expect(src).toContain('aria-label="Open WhatsApp chat"');
+    // The row uses the real WhatsApp logo, never the generic chat bubble.
+    expect(src).toContain('<WhatsAppIcon className="size-4" />');
+    expect(src).not.toContain("MessageCircle");
     // The PDF share path keeps its own, smaller button.
     expect(src).toContain('aria-label="Share bill PDF"');
     expect(src).toContain("void share(b)");

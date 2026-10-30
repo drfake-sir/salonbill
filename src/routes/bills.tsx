@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import {
@@ -7,13 +7,13 @@ import {
   ChevronLeft,
   ChevronRight,
   Lock,
-  MessageCircle,
   Printer,
   Share2,
   Ban,
 } from "lucide-react";
 import { toast } from "sonner";
-import { db, cancelBill, deviceLabel, type Bill } from "@/lib/db";
+import { db, cancelBill, deviceLabel, getTabId, loadDraft, type Bill } from "@/lib/db";
+import { storeRebill } from "@/lib/rebill";
 import { inr, waBillLink } from "@/lib/billing";
 import { isValidPhone } from "@/lib/phoneInput";
 import { shareBillPdf } from "@/lib/pdf";
@@ -23,6 +23,7 @@ import { ReceiptView } from "@/components/ReceiptView";
 import { PrintPortal } from "@/components/PrintPortal";
 import { PinPad } from "@/components/PinGate";
 import { SendBillDialog } from "@/components/SendBillDialog";
+import { WhatsAppIcon } from "@/components/WhatsAppIcon";
 import { servedByLabel } from "@/lib/servedBy";
 
 export const Route = createFileRoute("/bills")({
@@ -51,6 +52,7 @@ function Bills() {
   const stylists = useLiveQuery(() => db.stylists.toArray(), []) ?? [];
   const owner = useOwner();
   const session = useSession();
+  const navigate = useNavigate();
   const [printing, setPrinting] = useState<Bill | null>(null);
   // Bills whose line-by-line split-up is open.
   const [openId, setOpenId] = useState<number | null>(null);
@@ -123,6 +125,50 @@ function Bills() {
     }
   };
 
+  /**
+   * OWNER ONLY: cancel through the exact same append-only flow as Cancel
+   * (owner session + a typed reason, original row kept as cancelled), then
+   * hand the items to the Billing screen as a brand-new empty draft so the
+   * owner fixes it and Saves it as a normal bill with a NEW bill number.
+   *
+   * Nothing happens when the reason prompt is dismissed, and a saved bill is
+   * never edited in place — the new bill is always a separate row.
+   */
+  const cancelAndRebill = async (b: Bill) => {
+    if (!owner) {
+      toast.error("Unlock with owner PIN to cancel and rebill");
+      return;
+    }
+    if (b.status !== "paid") {
+      toast.error("Only a saved bill can be cancelled and rebilled");
+      return;
+    }
+    // Refuse BEFORE touching anything if the Billing screen still holds an
+    // unfinished bill — the rebill would otherwise overwrite it.
+    try {
+      const mine = await loadDraft(getTabId());
+      if (mine?.lines.length) {
+        toast.error("Clear or hold the unfinished bill on the Billing screen first");
+        return;
+      }
+    } catch {
+      /* drafts are best-effort recovery */
+    }
+    const reason = prompt(`Reason for cancelling ${b.number}?`)?.trim();
+    // Dismissed OR whitespace-only → abort, nothing changes.
+    if (!reason) return;
+    try {
+      // Same call as Cancel: stock restored once, original row kept as-is.
+      await cancelBill(b.id!, reason, session?.name);
+      storeRebill(b);
+      toast.success(`${b.number} cancelled · opening a new bill with the same items`);
+      navigate({ to: "/" });
+    } catch (e) {
+      console.error(e);
+      toast.error("Could not cancel this bill");
+    }
+  };
+
   return (
     <div>
       <h1 className="mb-6 text-2xl font-extrabold tracking-tight">Past bills</h1>
@@ -174,7 +220,7 @@ function Bills() {
                     className="tap grid w-11 place-items-center rounded-xl bg-success text-success-foreground"
                     aria-label="Open WhatsApp chat"
                   >
-                    <MessageCircle className="size-4" />
+                    <WhatsAppIcon className="size-4" />
                   </button>
                   <button
                     onClick={() => void share(b)}
@@ -300,6 +346,17 @@ function Bills() {
                       </div>
                     )}
                   </div>
+                  {/* Owner-only: fix a mistake by cancelling (append-only)
+                      and starting a fresh bill with the same items. */}
+                  {owner && b.status === "paid" && (
+                    <button
+                      onClick={() => void cancelAndRebill(b)}
+                      className="tap mt-3 flex w-full items-center justify-center gap-2 rounded-xl border border-destructive/40 bg-destructive/5 px-4 py-3 text-sm font-semibold text-destructive"
+                    >
+                      <Ban className="size-4 shrink-0" />
+                      Cancel and rebill
+                    </button>
+                  )}
                 </div>
               )}
             </div>

@@ -46,6 +46,7 @@ import {
   type CustomStylistKeys,
 } from "@/lib/servedBy";
 import { istIso } from "@/lib/earnings";
+import { takeRebill } from "@/lib/rebill";
 import { printBill } from "@/lib/print";
 import { shareBillPdf } from "@/lib/pdf";
 import { useSession } from "@/lib/lock";
@@ -449,8 +450,29 @@ function Billing() {
     (async () => {
       try {
         await pruneDrafts();
+        // Owner used "Cancel and rebill" on a saved bill: its items arrive as
+        // a brand-new, EMPTY draft (no id, no heldId → a new bill number on
+        // Save). An unfinished local bill wins — the payload stays stored for
+        // the next load instead of overwriting what is on screen.
         const mine = await loadDraft(tabId);
-        if (mine?.lines.length) {
+        const rebill = mine?.lines.length ? null : takeRebill();
+        if (rebill) {
+          setLines(rebill.lines);
+          setMode(rebill.mode);
+          setCust(
+            rebill.customerName
+              ? {
+                  id: rebill.customerId,
+                  name: rebill.customerName,
+                  phone: rebill.customerPhone ?? "",
+                }
+              : null,
+          );
+          setHeldId(undefined); // a new row with a new number — never the old one
+          setServedBy(null);
+          setCustomStylists(new Set<string>());
+          toast.success(`${rebill.from} cancelled — fix these items and Save as a new bill`);
+        } else if (mine?.lines.length) {
           setLines(mine.lines);
           setDiscType(mine.discountType);
           setDisc(mine.discountValue);
@@ -520,17 +542,17 @@ function Billing() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [lines.length, sheet]);
   const panel = (
-    <div className="flex h-full min-h-0 flex-1 flex-col gap-2">
+    <div className="flex h-full min-h-0 flex-1 flex-col gap-0.5">
       <div className="flex shrink-0 items-center justify-between gap-2">
         {/* One line: what this is + how many items, with Clear and close. */}
-        <h2 className="min-w-0 truncate text-lg font-bold">
+        <h2 className="min-w-0 truncate text-sm font-bold">
           Current bill - {itemQty} item{itemQty === 1 ? "" : "s"}
         </h2>
         <div className="flex items-center gap-3">
           {lines.length > 0 && (
             <button
               onClick={reset}
-              className="tap px-2 text-sm text-muted-foreground hover:text-destructive"
+              className="px-2 py-2.5 text-sm text-muted-foreground hover:text-destructive"
             >
               Clear
             </button>
@@ -538,7 +560,7 @@ function Billing() {
           <button
             onClick={() => setSheet(false)}
             aria-label="Close bill"
-            className="tap -mr-2 grid size-11 place-items-center rounded-xl text-muted-foreground hover:bg-secondary lg:hidden"
+            className="-mr-1 grid size-10 place-items-center rounded-xl text-muted-foreground hover:bg-secondary lg:hidden"
           >
             <X className="size-5" />
           </button>
@@ -549,7 +571,7 @@ function Billing() {
         <div
           role="group"
           aria-label="Served by"
-          className="-mx-1 flex shrink-0 items-center gap-2 overflow-x-auto px-1 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="-mx-1 flex shrink-0 items-center gap-1.5 overflow-x-auto px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           <span className="shrink-0 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Served by
@@ -562,7 +584,7 @@ function Billing() {
                 onClick={() => s.id !== undefined && pickServedBy(s.id)}
                 aria-pressed={active}
                 title={`Every line served by ${s.name}`}
-                className={`tap min-h-11 shrink-0 rounded-full px-3 py-1.5 text-sm font-semibold ${
+                className={`min-h-10 shrink-0 rounded-full px-2.5 py-1 text-sm font-semibold ${
                   active ? "bg-primary text-primary-foreground" : "bg-secondary"
                 }`}
               >
@@ -593,10 +615,7 @@ function Billing() {
         </div>
       ) : (
         <div className="shrink-0">
-          <label
-            htmlFor="bill-customer"
-            className="mb-1 block text-[11px] font-semibold uppercase tracking-wide text-muted-foreground"
-          >
+          <label htmlFor="bill-customer" className="sr-only">
             Customer name or phone
           </label>
           <div className="relative">
@@ -614,7 +633,7 @@ function Billing() {
               placeholder="Customer name or phone"
               maxLength={60}
               inputMode={/^\d+$/.test(custQ) || custQ === "" ? "numeric" : "text"}
-              className="tap w-full rounded-2xl border border-input bg-card px-4 py-2.5 outline-none focus:ring-2 focus:ring-ring"
+              className="h-11 w-full rounded-2xl border border-input bg-card px-4 outline-none focus:ring-2 focus:ring-ring"
             />
             {custQ.length >= 2 && (
               <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-2xl border bg-popover shadow-lift">
@@ -654,7 +673,7 @@ function Billing() {
               {PHONE_ERROR}
             </p>
           )}
-          <p className="mt-1 text-xs text-muted-foreground">
+          <p className="mt-0.5 text-[11px] leading-tight text-muted-foreground">
             Add a phone to save the customer and send on WhatsApp
           </p>
           {typedCustomerName(custQ) && (
@@ -697,7 +716,7 @@ function Billing() {
         <div
           ref={listRef}
           onScroll={syncShadows}
-          className="-mx-1 min-h-24 flex-1 space-y-2 overflow-y-auto overscroll-contain px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          className="-mx-1 min-h-24 flex-1 space-y-1 overflow-y-auto overscroll-contain px-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
         >
           {!lines.length && (
             <div className="grid place-items-center rounded-2xl border border-dashed py-12 text-center text-muted-foreground">
@@ -707,7 +726,7 @@ function Billing() {
           {lines.map((l) => (
             <div
               key={l.key}
-              className="rounded-2xl border bg-card p-2 animate-in fade-in slide-in-from-right-2 duration-200"
+              className="rounded-2xl border bg-card p-1 animate-in fade-in slide-in-from-right-2 duration-200"
             >
               {/* Row 1 — service name and the line's price. */}
               <div className="flex items-center justify-between gap-2">
@@ -730,8 +749,8 @@ function Billing() {
                   )}
                 </span>
               </div>
-              {/* Row 2 — stylist, quantity stepper, remove (all 44px targets). */}
-              <div className="mt-1 flex items-center gap-2">
+              {/* Row 2 — stylist, quantity stepper, remove (all 40px targets). */}
+              <div className="mt-0.5 flex items-center gap-2">
                 {l.kind === "service" && (
                   <div className="relative min-w-0">
                     {/* Small tappable chip (not a form field): name + caret. */}
@@ -739,7 +758,7 @@ function Billing() {
                       onClick={() => setStylistFor(stylistFor === l.key ? null : l.key)}
                       aria-label={`Stylist for ${l.name}`}
                       aria-expanded={stylistFor === l.key}
-                      className="tap flex h-11 min-w-0 max-w-full items-center gap-1 rounded-xl bg-secondary px-3 text-sm font-semibold"
+                      className="flex h-10 min-w-0 max-w-full items-center gap-1 rounded-xl bg-secondary px-2.5 text-sm font-semibold"
                     >
                       <span className="truncate">
                         {stylists.find((s) => s.id === l.stylistId)?.name ?? "Stylist"}
@@ -761,7 +780,7 @@ function Billing() {
                               setCustomStylists((c) => markStylistPick(c, l.key, id, servedBy));
                               setStylistFor(null);
                             }}
-                            className="flex min-h-11 w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-secondary"
+                            className="flex min-h-10 w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-sm hover:bg-secondary"
                           >
                             <span className="truncate">{opt.name}</span>
                             {(opt.id ?? null) === (l.stylistId ?? null) && (
@@ -790,7 +809,7 @@ function Billing() {
                   })()}
                 <div className="ml-auto flex shrink-0 items-center rounded-xl bg-secondary">
                   <button
-                    className="grid size-11 place-items-center"
+                    className="grid size-10 place-items-center"
                     onClick={() => upd(l.key, { qty: l.qty - 1 })}
                     aria-label="Less"
                   >
@@ -798,7 +817,7 @@ function Billing() {
                   </button>
                   <span className="w-6 text-center font-semibold">{l.qty}</span>
                   <button
-                    className="grid size-11 place-items-center"
+                    className="grid size-10 place-items-center"
                     onClick={() => upd(l.key, { qty: l.qty + 1 })}
                     aria-label="More"
                   >
@@ -808,7 +827,7 @@ function Billing() {
                 <button
                   onClick={() => removeLine(l.key)}
                   aria-label={`Remove ${l.name}`}
-                  className="tap grid size-11 shrink-0 place-items-center rounded-xl bg-secondary text-destructive"
+                  className="grid size-10 shrink-0 place-items-center rounded-xl bg-secondary text-destructive"
                 >
                   <X className="size-4" />
                 </button>
@@ -831,16 +850,16 @@ function Billing() {
         />
       </div>
 
-      {/* space-y-2 / pt-3 (was space-y-3 / pt-4): at 390×844 the footer must
-          leave room for at least three full service lines above it. */}
-      <div className="sticky bottom-0 z-10 shrink-0 space-y-2 border-t bg-card pt-3">
+      {/* space-y-1.5 / pt-2 (was space-y-2 / pt-3): the footer must leave as
+          much room as possible for the item list on a phone. */}
+      <div className="sticky bottom-0 z-10 shrink-0 space-y-1 border-t bg-card pt-1">
         {/* Discount / Tip collapsed into one row; tap to expand the inputs. */}
         <div>
           <button
             onClick={() => setDiscOpen((o) => !o)}
             aria-expanded={discOpen}
             aria-label="Discount / Tip"
-            className="tap flex h-11 w-full items-center justify-between gap-2 rounded-xl border border-input bg-card px-3 text-sm"
+            className="flex h-10 w-full items-center justify-between gap-2 rounded-xl border border-input bg-card px-3 text-sm"
           >
             <span className="shrink-0 font-semibold">Discount / Tip</span>
             <span className="truncate text-muted-foreground">
@@ -895,7 +914,7 @@ function Billing() {
             </div>
           )}
         </div>
-        <div className="space-y-1 text-sm">
+        <div className="space-y-0.5 text-xs">
           {totals.subtotal > 0 && <Row k="Subtotal" v={inr(totals.subtotal)} />}
           {totals.discount > 0 && <Row k="Discount" v={`−${inr(totals.discount)}`} />}
           {settings?.gstOn && (
@@ -908,19 +927,16 @@ function Billing() {
         </div>
         <div className="flex items-end justify-between">
           <span className="text-muted-foreground">Total</span>
-          <span className="text-3xl font-extrabold tabular-nums">{inr(totals.total)}</span>
+          <span className="text-2xl font-extrabold tabular-nums">{inr(totals.total)}</span>
         </div>
-        <div>
-          <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-            Payment
-          </span>
+        <div role="group" aria-label="Payment">
           <div className="grid grid-cols-4 gap-2">
             {MODES.map((m) => (
               <button
                 key={m}
                 onClick={() => setMode(m)}
                 aria-pressed={mode === m}
-                className={`tap flex items-center justify-center gap-1 rounded-xl py-2 text-sm font-semibold ${
+                className={`flex items-center justify-center gap-1 rounded-xl py-2.5 text-sm font-semibold ${
                   mode === m ? "bg-primary text-primary-foreground shadow-soft" : "bg-secondary"
                 }`}
               >
@@ -1062,9 +1078,9 @@ function Billing() {
         >
           <div
             onClick={(e) => e.stopPropagation()}
-            className="absolute inset-x-0 bottom-0 flex max-h-[92dvh] flex-col rounded-t-3xl bg-card p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] animate-in slide-in-from-bottom duration-200"
+            className="absolute inset-x-0 bottom-0 flex h-[96dvh] flex-col rounded-t-3xl bg-card p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] animate-in slide-in-from-bottom duration-200"
           >
-            <div className="mx-auto mb-2 h-1.5 w-12 rounded-full bg-border lg:hidden" />
+            <div className="mx-auto mb-1 h-1.5 w-12 rounded-full bg-border lg:hidden" />
             {/* Scroll the whole panel when it is taller than the sheet (short
                 phones, landscape, keyboard open) so the action footer can stay
                 pinned and reachable instead of hanging below the viewport.

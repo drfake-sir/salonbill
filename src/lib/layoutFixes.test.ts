@@ -21,7 +21,7 @@ describe("bill sheet fits short viewports (360x640, landscape, keyboard-open)", 
   });
 
   it("keeps the Hold/Save/Print footer pinned inside the sheet", () => {
-    expect(src).toMatch(/sticky bottom-0 z-10 shrink-0 space-y-2 border-t bg-card pt-3/);
+    expect(src).toMatch(/sticky bottom-0 z-10 shrink-0 space-y-1 border-t bg-card pt-1/);
   });
 
   it("footer spacing leaves room for 3 full service lines at 390×844", () => {
@@ -31,26 +31,28 @@ describe("bill sheet fits short viewports (360x640, landscape, keyboard-open)", 
   });
 
   it("never lets the line-items box collapse to zero height", () => {
-    expect(src).toMatch(/-mx-1 min-h-24 flex-1 space-y-2 overflow-y-auto/);
+    expect(src).toMatch(/-mx-1 min-h-24 flex-1 space-y-1 overflow-y-auto/);
     expect(src).not.toMatch(/-mx-1 min-h-0 flex-1 space-y-2 overflow-y-auto/);
   });
 });
 
-describe("touch targets are at least 44px", () => {
+describe("touch targets are at least 40px", () => {
   const index = read("routes/index.tsx");
   const bills = read("routes/bills.tsx");
   const earnings = read("routes/earnings.tsx");
   const syncGate = read("components/SyncGate.tsx");
 
-  it("billing: Clear button gets the 48px `tap` min-height", () => {
+  it("billing: Clear button is a 40px target (compact header, no 48px tap floor)", () => {
+    // The compact mobile sheet needs the header row ≤ 40px, so this button
+    // carries its height explicitly instead of the global `tap` min-height.
     expect(index).toMatch(
-      /className="tap px-2 text-sm text-muted-foreground hover:text-destructive"/,
+      /className="px-2 py-2\.5 text-sm text-muted-foreground hover:text-destructive"/,
     );
   });
 
-  it("billing: sheet close and customer-remove buttons are 44px (size-11)", () => {
+  it("billing: sheet close is 40px (size-10), customer-remove stays 44px", () => {
     expect(index).toMatch(/aria-label="Close bill"/);
-    expect(index).toContain("grid size-11 place-items-center rounded-xl text-muted-foreground");
+    expect(index).toContain("grid size-10 place-items-center rounded-xl text-muted-foreground");
     expect(index).toContain("grid size-11 shrink-0 place-items-center");
     expect(index).not.toContain(
       'aria-label="Close bill"\n              className="tap -mr-2 grid size-10',
