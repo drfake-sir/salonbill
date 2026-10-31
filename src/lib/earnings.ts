@@ -247,6 +247,43 @@ export function flatLines(e: Earnings): EarnedLine[] {
   return [...e.days].reverse().flatMap((d) => [...d.lines].reverse());
 }
 
+/* --------------------------- display preferences -------------------------- */
+
+/** The one settings field these helpers read — kept structural on purpose so
+ *  they stay pure and tests do not have to build a whole Settings row. */
+type CommissionSetting = { showCommission?: boolean | undefined };
+
+/**
+ * Is commission visible? Reads the owner's "Show commission in Earnings"
+ * switch (settings row, so it syncs with every other preference).
+ *
+ * Absent key = ON: that is the default for a fresh install AND every settings
+ * row saved before the switch existed, so no migration changes any salon's
+ * numbers. Display only — commission is still calculated and snapshotted on
+ * every bill line exactly as before.
+ */
+export function commissionVisible(s: CommissionSetting | null | undefined): boolean {
+  return s?.showCommission !== false;
+}
+
+export type MainFigure = {
+  /** The big number at the top of a period card / the range summary. */
+  amount: number;
+  /** Caption printed under that number. */
+  label: string;
+};
+
+/**
+ * Which figure Earnings leads with. ON keeps today's view untouched
+ * (commission earned); OFF leads with the sales total instead and never names
+ * commission. Money itself is only read here, never recomputed.
+ */
+export function mainFigure(e: Earnings, showCommission: boolean): MainFigure {
+  return showCommission
+    ? { amount: e.commission, label: "commission earned" }
+    : { amount: e.value, label: "service value" };
+}
+
 /* --------------------------------- CSV ---------------------------------- */
 
 /**

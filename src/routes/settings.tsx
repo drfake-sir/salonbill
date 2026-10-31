@@ -113,17 +113,23 @@ function SettingsPage() {
       />
     </label>
   );
-  const toggle = (label: string, key: "gstOn" | "autoPrint") => (
+  // `on` is passed explicitly where a missing key must read as ON
+  // (showCommission predates the switch — see commissionVisible()).
+  const toggle = (
+    label: string,
+    key: "gstOn" | "autoPrint" | "showCommission",
+    on = Boolean(s[key]),
+  ) => (
     <button
-      onClick={() => set({ [key]: !s[key] })}
+      onClick={() => set({ [key]: !on })}
       className="tap flex w-full items-center justify-between rounded-xl bg-secondary px-4 py-2.5"
     >
       <span className="font-medium">{label}</span>
       <span
-        className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${s[key] ? "bg-success" : "bg-border"}`}
+        className={`relative h-7 w-12 shrink-0 rounded-full transition-colors ${on ? "bg-success" : "bg-border"}`}
       >
         <span
-          className={`absolute top-1 size-5 rounded-full bg-card shadow-soft transition-all ${s[key] ? "left-6" : "left-1"}`}
+          className={`absolute top-1 size-5 rounded-full bg-card shadow-soft transition-all ${on ? "left-6" : "left-1"}`}
         />
       </span>
     </button>
@@ -205,6 +211,7 @@ function SettingsPage() {
           {toggle("GST billing (CGST + SGST)", "gstOn")}
           {s.gstOn && field("GSTIN", "gstin")}
           {toggle("Auto-print after save", "autoPrint")}
+          {toggle("Show commission in Earnings", "showCommission", s.showCommission !== false)}
           <div className="flex gap-2">
             {(["80mm", "58mm"] as const).map((p) => (
               <button
@@ -238,27 +245,38 @@ function SettingsPage() {
                   {p.name.slice(0, 1)}
                 </span>
                 <span className="min-w-0 flex-1 truncate font-medium">{p.name}</span>
+                {/* 160px (w-40) + normal placeholder tracking is what lets the
+                    status read "PIN set ✓" in full at text-lg/0.3em — the old
+                    narrow box cut it to "PIN se". The field only ever holds a
+                    NEW PIN being typed; the saved one is a salted hash and is
+                    never rendered, and it is wiped from the field on success. */}
                 <input
                   key={`${p.id}-${p.pin ?? "none"}`}
                   defaultValue=""
                   inputMode="numeric"
-                  placeholder={p.pin ? "PIN set" : "No PIN"}
+                  placeholder={p.pin ? "PIN set ✓" : "No PIN"}
                   maxLength={8}
                   aria-label={`${p.name} PIN`}
                   onBlur={(e) => {
-                    const v = e.target.value.replace(/\D/g, "").slice(0, 8);
+                    const target = e.target;
+                    const v = target.value.replace(/\D/g, "").slice(0, 8);
                     if (v === "") {
                       if (!p.pin) return; // already unset — don't churn the row
-                      void setStaffPin(p.id!, undefined);
+                      void setStaffPin(p.id!, undefined).then(() => {
+                        target.value = "";
+                      });
                       return;
                     }
-                    if (isValidNewPin(v)) void setStaffPin(p.id!, v);
-                    else {
-                      e.target.value = "";
+                    if (isValidNewPin(v)) {
+                      void setStaffPin(p.id!, v).then(() => {
+                        target.value = ""; // success: the field is left empty
+                      });
+                    } else {
+                      target.value = "";
                       toast.error("PIN must be 6-8 digits (or empty to disable)");
                     }
                   }}
-                  className="tap w-28 rounded-xl border border-input bg-card px-3 py-2 text-center text-lg font-bold tracking-[0.3em] outline-none focus:ring-2 focus:ring-ring"
+                  className="tap w-40 rounded-xl border border-input bg-card px-3 py-2 text-center text-lg font-bold tracking-[0.3em] placeholder:tracking-normal outline-none focus:ring-2 focus:ring-ring"
                 />
               </div>
             ))}
@@ -369,7 +387,15 @@ type CloudStatus = {
   error?: string;
 };
 
-function CloudBackupCard() {
+/**
+ * "Cloud backup (automatic)" — rendered ONLY while the server confirms cloud
+ * backup storage exists and this device holds a sync token. When it is not
+ * enabled the whole card is absent: no red error, no disabled button and no
+ * "kept for 13 months" claim about a backup that can never happen. The manual
+ * backup / restore cards below never depend on this.
+ * Exported so the regression test can drive both states.
+ */
+export function CloudBackupCard() {
   const [status, setStatus] = useState<CloudStatus | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -409,6 +435,9 @@ function CloudBackupCard() {
     }
   };
 
+  // Not enabled (no R2 storage on this app) or not yet connected: hide it all.
+  if (!status?.ok) return null;
+
   return (
     <section className="space-y-3 rounded-3xl bg-card p-5 shadow-soft">
       <div>
@@ -421,21 +450,15 @@ function CloudBackupCard() {
         </p>
       </div>
       <div className="rounded-2xl bg-secondary px-4 py-3 text-sm">
-        {status === null ? (
-          <span className="text-muted-foreground">Checking cloud backup status…</span>
-        ) : status.ok ? (
-          <span>
-            <strong>Last cloud backup:</strong>{" "}
-            {status.at ? new Date(status.at).toLocaleString("en-IN") : "never"}{" "}
-            {status.at && (
-              <span className="text-muted-foreground">
-                · {status.rows ?? 0} rows / {status.bills ?? 0} bills
-              </span>
-            )}
-          </span>
-        ) : (
-          <span className="text-destructive">{status.error}</span>
-        )}
+        <span>
+          <strong>Last cloud backup:</strong>{" "}
+          {status.at ? new Date(status.at).toLocaleString("en-IN") : "never"}{" "}
+          {status.at && (
+            <span className="text-muted-foreground">
+              · {status.rows ?? 0} rows / {status.bills ?? 0} bills
+            </span>
+          )}
+        </span>
       </div>
       <button
         onClick={() => void runNow()}

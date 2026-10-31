@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { Checkbox } from "@/components/ui/checkbox";
 import { bulkProblem, planBulk, type BulkMode } from "@/lib/bulkPrice";
+import { commissionVisible } from "@/lib/earnings";
 
 export const Route = createFileRoute("/catalog")({
   head: () => ({
@@ -184,10 +185,15 @@ type AddKind = "service" | "product" | "stylist";
 function AddForm({
   kind,
   categoryId,
+  showCommission = true,
   onDone,
 }: {
   kind: AddKind;
   categoryId?: number | undefined;
+  /** Owner's "Show commission in Earnings" switch — OFF hides the commission
+   *  % box. The default (10%) still applies silently, so stylists added while
+   *  it is off keep getting a snapshotted rate; billing itself is untouched. */
+  showCommission?: boolean;
   onDone: () => void;
 }) {
   const [name, setName] = useState("");
@@ -349,7 +355,11 @@ function AddForm({
         )}
         {kind === "stylist" && (
           <>
-            <Field label="Phone (optional)" always>
+            <Field
+              label="Phone (optional)"
+              always
+              className={showCommission ? "" : "sm:col-span-2"}
+            >
               <input
                 inputMode="tel"
                 value={phone}
@@ -359,19 +369,21 @@ function AddForm({
                 className={`${input} w-full`}
               />
             </Field>
-            <Field label="Commission %" always>
-              <input
-                type="number"
-                min={0}
-                max={100}
-                inputMode="numeric"
-                value={commission}
-                onChange={(e) => setCommission(e.target.value)}
-                aria-label="Commission %"
-                placeholder="10"
-                className={`${input} w-full`}
-              />
-            </Field>
+            {showCommission && (
+              <Field label="Commission %" always>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  inputMode="numeric"
+                  value={commission}
+                  onChange={(e) => setCommission(e.target.value)}
+                  aria-label="Commission %"
+                  placeholder="10"
+                  className={`${input} w-full`}
+                />
+              </Field>
+            )}
           </>
         )}
       </div>
@@ -938,10 +950,15 @@ function ProductRow({
 function StylistRow({
   s,
   usedCount,
+  showCommission = true,
   onDeleteClick,
 }: {
   s: Stylist;
   usedCount: number;
+  /** Owner's "Show commission in Earnings" switch — OFF removes the
+   *  commission % box (and its title cell) while keeping every other cell on
+   *  the exact track the title row puts it on. */
+  showCommission?: boolean;
   onDeleteClick: () => void;
 }) {
   const { status, run, schedule } = useCardSave();
@@ -965,7 +982,14 @@ function StylistRow({
         />
         <SaveStatus status={status} />
       </div>
-      <div className="order-3 grid grid-cols-2 gap-2 lg:order-none lg:contents">
+      {/* With commission OFF the phone box takes both card columns below lg and
+          the empty cell below keeps the 6rem track the title row reserves for
+          "Commission %" — so nothing shifts sideways at any width. */}
+      <div
+        className={`order-3 grid grid-cols-2 gap-2 ${
+          showCommission ? "" : "[&>*]:col-span-2 lg:[&>*]:col-span-1"
+        } lg:order-none lg:contents`}
+      >
         <Field label="Phone (optional)">
           <input
             inputMode="tel"
@@ -978,28 +1002,32 @@ function StylistRow({
             className={`${input} w-full`}
           />
         </Field>
-        <Field label="Commission %">
-          <input
-            type="number"
-            min={0}
-            max={100}
-            inputMode="numeric"
-            defaultValue={s.commissionPct}
-            aria-label="Commission %"
-            onChange={(e) => {
-              const n = Number(e.target.value);
-              if (!Number.isFinite(n) || n < 0 || n > 100) return;
-              if (n === s.commissionPct) return;
-              schedule("commission", () => db.stylists.update(s.id!, { commissionPct: n }));
-            }}
-            onBlur={(e) => {
-              const n = Number(e.target.value);
-              if (!Number.isFinite(n) || n < 0 || n > 100)
-                e.currentTarget.value = String(s.commissionPct);
-            }}
-            className={`${input} w-full`}
-          />
-        </Field>
+        {showCommission ? (
+          <Field label="Commission %">
+            <input
+              type="number"
+              min={0}
+              max={100}
+              inputMode="numeric"
+              defaultValue={s.commissionPct}
+              aria-label="Commission %"
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isFinite(n) || n < 0 || n > 100) return;
+                if (n === s.commissionPct) return;
+                schedule("commission", () => db.stylists.update(s.id!, { commissionPct: n }));
+              }}
+              onBlur={(e) => {
+                const n = Number(e.target.value);
+                if (!Number.isFinite(n) || n < 0 || n > 100)
+                  e.currentTarget.value = String(s.commissionPct);
+              }}
+              className={`${input} w-full`}
+            />
+          </Field>
+        ) : (
+          <span className="hidden lg:block" />
+        )}
       </div>
       <div className="order-4 flex items-center gap-2 lg:order-none lg:contents">
         <button
@@ -1031,6 +1059,10 @@ export function Catalog() {
   const services = useLiveQuery(() => db.services.toArray(), []) ?? [];
   const products = useLiveQuery(() => db.products.toArray(), []) ?? [];
   const stylists = useLiveQuery(() => db.stylists.toArray(), []) ?? [];
+  // Owner's "Show commission in Earnings" switch — when it is OFF the
+  // commission % box is not an editable field anywhere in here.
+  const settings = useLiveQuery(() => db.settings.get(1));
+  const showCommission = commissionVisible(settings);
   // Issued bills only (held drafts are device-local and not history).
   const issued = useLiveQuery(() => db.bills.where("status").notEqual("held").toArray(), []) ?? [];
   const [tab, setTab] = useState<"services" | "products" | "stylists">("services");
@@ -1256,20 +1288,27 @@ export function Catalog() {
             <div className={`${headCls} ${colTpl.stylists}`}>
               <span className={headCell}>Name</span>
               <span className={headCell}>Phone</span>
-              <span className={headCell}>Commission %</span>
+              {showCommission ? <span className={headCell}>Commission %</span> : <span />}
               <span className={headCell}>Disable</span>
               <span className={headCell}>Delete</span>
               <span className={headCell}>Earnings</span>
               <span />
             </div>
           )}
-          {adding?.kind === "stylist" && <AddForm kind="stylist" onDone={() => setAdding(null)} />}
+          {adding?.kind === "stylist" && (
+            <AddForm
+              kind="stylist"
+              showCommission={showCommission}
+              onDone={() => setAdding(null)}
+            />
+          )}
           {stylists.length ? (
             <div>
               {stylists.map((s) => (
                 <StylistRow
                   key={s.id}
                   s={s}
+                  showCommission={showCommission}
                   usedCount={counts.sty.get(s.id!) ?? 0}
                   onDeleteClick={() =>
                     askDelete("stylist", s.id, s.name, counts.sty.get(s.id!) ?? 0)

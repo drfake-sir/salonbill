@@ -123,6 +123,14 @@ export type Settings = {
   reviewUrl: string;
   billSeq: number;
   onboarded: boolean;
+  /**
+   * Owner preference: show commission figures in Earnings (and the commission
+   * % box in the stylist editor). Default ON. Rows saved before this switch
+   * existed simply don't carry the key, which reads back as ON — see
+   * `commissionVisible()` in lib/earnings.ts — so no migration is needed and
+   * every existing salon keeps the exact same numbers.
+   */
+  showCommission?: boolean | undefined;
 };
 export type Audit = { id?: number | undefined; at: number; action: string; detail: string };
 /** Unfinished bill kept per browser tab so a refresh never loses work. */
@@ -321,6 +329,7 @@ export const defaultSettings: Settings = {
   ownerPin: "1234",
   billSeq: 0,
   onboarded: false,
+  showCommission: true,
 };
 
 export async function logAudit(action: string, detail: string) {

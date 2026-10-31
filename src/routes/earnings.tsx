@@ -9,10 +9,12 @@ import { useOwner, useSession } from "@/lib/lock";
 import { PinPad } from "@/components/PinGate";
 import { downloadText } from "@/lib/export";
 import {
+  commissionVisible,
   computeEarnings,
   earningsToCsv,
   CSV_HEADER,
   flatLines,
+  mainFigure,
   rangeDays,
   rangeLastMonth,
   rangeLastWeek,
@@ -120,6 +122,11 @@ function EarningsView({
 }) {
   const bills = useLiveQuery(() => db.bills.toArray(), [], EMPTY_BILLS);
   const stylists = useLiveQuery(() => db.stylists.toArray(), [], EMPTY_STYLISTS);
+  // Owner's "Show commission in Earnings" switch (default ON, syncs with the
+  // rest of Settings). Hiding it changes WHAT is displayed only — every figure
+  // below is still computed from the same saved bills.
+  const settings = useLiveQuery(() => db.settings.get(1));
+  const showCommission = commissionVisible(settings);
   const owner = useOwner();
 
   const [now, setNow] = useState(() => Date.now());
@@ -197,8 +204,8 @@ function EarningsView({
   const flashEarned = useMemo(() => {
     if (!flash || flash.at <= flashSeen || !flashBill) return 0;
     const e = computeEarnings([flashBill], ref, rangeToday(now));
-    return e.commission + e.tip;
-  }, [flash, flashSeen, flashBill, ref, now]);
+    return showCommission ? e.commission + e.tip : e.tip;
+  }, [flash, flashSeen, flashBill, ref, now, showCommission]);
 
   /* --------------------------------- CSV ---------------------------------- */
   const exportCsv = () => {
@@ -259,7 +266,8 @@ function EarningsView({
           {forced ? "My earnings" : "Earnings"}
         </h1>
         <p className="text-sm text-muted-foreground">
-          {forced ? forced.name : selectedName} · commission from saved bills
+          {forced ? forced.name : selectedName} ·{" "}
+          {showCommission ? "commission from saved bills" : "services and sales from saved bills"}
         </p>
       </div>
 
@@ -319,11 +327,13 @@ function EarningsView({
                   </span>
                 )}
               </div>
-              <div className="mt-1 text-2xl font-extrabold tabular-nums">{inr(c.e.commission)}</div>
+              <div className="mt-1 text-2xl font-extrabold tabular-nums">
+                {inr(mainFigure(c.e, showCommission).amount)}
+              </div>
               <div
                 className={`mt-0.5 text-xs ${activeKey === c.key ? "opacity-80" : "text-muted-foreground"}`}
               >
-                {c.e.services} services · {inr(c.e.value)}
+                {c.e.services} services{showCommission ? ` · ${inr(c.e.value)}` : ""}
               </div>
             </button>
           );
@@ -377,23 +387,31 @@ function EarningsView({
           {istDateLabel(range.start)} – {istDateLabel(range.end - 1)} ·{" "}
           {forced ? forced.name : selectedName}
         </div>
-        <div className="mt-1 text-4xl font-extrabold tabular-nums">{inr(active.commission)}</div>
-        <div className="text-sm text-muted-foreground">commission earned</div>
-        <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+        <div className="mt-1 text-4xl font-extrabold tabular-nums">
+          {inr(mainFigure(active, showCommission).amount)}
+        </div>
+        <div className="text-sm text-muted-foreground">
+          {mainFigure(active, showCommission).label}
+        </div>
+        <div
+          className={`mt-3 grid gap-2 text-center ${showCommission ? "grid-cols-3" : "grid-cols-2"}`}
+        >
           <div className="rounded-2xl bg-secondary p-3">
             <div className="text-lg font-extrabold tabular-nums">{active.services}</div>
             <div className="text-xs text-muted-foreground">services</div>
           </div>
-          <div className="rounded-2xl bg-secondary p-3">
-            <div className="text-lg font-extrabold tabular-nums">{inr(active.value)}</div>
-            <div className="text-xs text-muted-foreground">service value</div>
-          </div>
+          {showCommission && (
+            <div className="rounded-2xl bg-secondary p-3">
+              <div className="text-lg font-extrabold tabular-nums">{inr(active.value)}</div>
+              <div className="text-xs text-muted-foreground">service value</div>
+            </div>
+          )}
           <div className="rounded-2xl bg-secondary p-3">
             <div className="text-lg font-extrabold tabular-nums">{inr(active.tip)}</div>
             <div className="text-xs text-muted-foreground">tips</div>
           </div>
         </div>
-        {active.unrecorded > 0 && (
+        {showCommission && active.unrecorded > 0 && (
           <p className="mt-3 rounded-xl bg-gold-soft px-3 py-2 text-xs font-medium">
             Commission not recorded for {active.unrecorded}{" "}
             {active.unrecorded === 1 ? "service" : "services"} (billed before earnings tracking) —
@@ -416,22 +434,34 @@ function EarningsView({
         <section className="rounded-3xl bg-card p-5 shadow-soft">
           <h2 className="mb-3 font-bold">Stylist comparison</h2>
           <div className="space-y-2">
-            <div className="grid grid-cols-[1fr_auto_auto_auto] gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground">
+            <div
+              className={`grid gap-2 text-xs font-bold uppercase tracking-wide text-muted-foreground ${
+                showCommission ? "grid-cols-[1fr_auto_auto_auto]" : "grid-cols-[1fr_auto_auto]"
+              }`}
+            >
               <span>Stylist</span>
               <span className="w-10 text-right">Svc</span>
               <span className="w-16 text-right">Value</span>
-              <span className="w-16 text-right">Comm.</span>
+              {showCommission && <span className="w-16 text-right">Comm.</span>}
             </div>
             {comparison.map(({ s, e }) => (
               <button
                 key={s.id}
                 onClick={() => setSelected(s.id!)}
-                className="grid min-h-11 w-full grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-xl bg-secondary px-3 py-2 text-sm"
+                className={
+                  showCommission
+                    ? "grid min-h-11 w-full grid-cols-[1fr_auto_auto_auto] items-center gap-2 rounded-xl bg-secondary px-3 py-2 text-sm"
+                    : "grid min-h-11 w-full grid-cols-[1fr_auto_auto] items-center gap-2 rounded-xl bg-secondary px-3 py-2 text-sm"
+                }
               >
                 <span className="truncate text-left font-medium">{s.name}</span>
                 <span className="w-10 text-right tabular-nums">{e.services}</span>
                 <span className="w-16 text-right tabular-nums">{inr(e.value)}</span>
-                <span className="w-16 text-right font-bold tabular-nums">{inr(e.commission)}</span>
+                {showCommission && (
+                  <span className="w-16 text-right font-bold tabular-nums">
+                    {inr(e.commission)}
+                  </span>
+                )}
               </button>
             ))}
             {!comparison.length && <p className="text-sm text-muted-foreground">No staff yet.</p>}
@@ -464,7 +494,9 @@ function EarningsView({
                     </span>
                   </span>
                   <span className="shrink-0 text-right">
-                    <span className="block font-extrabold tabular-nums">{inr(d.commission)}</span>
+                    {showCommission && (
+                      <span className="block font-extrabold tabular-nums">{inr(d.commission)}</span>
+                    )}
                     {d.tip > 0 && (
                       <span className="block text-xs text-muted-foreground">+{inr(d.tip)} tip</span>
                     )}
@@ -499,19 +531,20 @@ function EarningsView({
                             </div>
                           </div>
                           <div className="shrink-0 text-right tabular-nums">
-                            {l.commission === null ? (
-                              <span className="text-xs font-medium text-muted-foreground">
-                                commission not recorded
-                              </span>
-                            ) : (
-                              <>
-                                <span className="font-bold">{inr(l.commission)}</span>
-                                <span className="text-xs text-muted-foreground">
-                                  {" "}
-                                  ({l.commissionPct}%)
+                            {showCommission &&
+                              (l.commission === null ? (
+                                <span className="text-xs font-medium text-muted-foreground">
+                                  commission not recorded
                                 </span>
-                              </>
-                            )}
+                              ) : (
+                                <>
+                                  <span className="font-bold">{inr(l.commission)}</span>
+                                  <span className="text-xs text-muted-foreground">
+                                    {" "}
+                                    ({l.commissionPct}%)
+                                  </span>
+                                </>
+                              ))}
                             {l.tip > 0 && (
                               <div className="text-xs text-muted-foreground">+{inr(l.tip)} tip</div>
                             )}
