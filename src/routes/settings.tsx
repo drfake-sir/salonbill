@@ -34,11 +34,22 @@ import {
   downloadLocalBackup,
   downloadMonthlyCopy,
   getMeta,
+  getMetaText,
   setMeta,
+  setMetaText,
   snapshotAll,
 } from "@/lib/export";
+import { drillSummary, runRestoreDrill } from "@/lib/restoreDrill";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { getSyncToken } from "@/lib/syncClient";
-import { hashPin, isValidNewPin } from "@/lib/pins";
+import { hashPin, isValidNewPin, verifyPin } from "@/lib/pins";
 import { backupNowFn, backupStatusFn } from "@/syncFns";
 import {
   canInstall,
@@ -101,6 +112,12 @@ function SettingsPage() {
   const stylists = useLiveQuery(() => db.stylists.toArray(), []) ?? [];
   const [printing, setPrinting] = useState<Bill | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Restore is destructive and replaces data on every device, so the file
+  // picker only stages it: the owner must confirm with their owner PIN here.
+  const [pending, setPending] = useState<File | null>(null);
+  const [restorePin, setRestorePin] = useState("");
+  const [restoreErr, setRestoreErr] = useState("");
+  const [restoring, setRestoring] = useState(false);
   if (!s) return null;
   const set = (p: Partial<Settings>) => db.settings.update(1, p);
   const field = (label: string, key: keyof Settings) => (
@@ -160,6 +177,32 @@ function SettingsPage() {
     toast.success("Owner PIN updated");
   };
 
+  /** The file picker finished: stage the file, the confirm dialog asks for the owner PIN. */
+  const requestRestore = async (file: File) => {
+    setPending(file);
+    setRestorePin("");
+    setRestoreErr("");
+  };
+
+  /** Called only after the owner PIN has been verified in the confirm dialog. */
+  const confirmRestore = async () => {
+    const file = pending;
+    if (!file || restoring) return;
+    if (!s.ownerPin || !(await verifyPin(s.ownerPin, restorePin))) {
+      setRestoreErr("That is not the owner PIN.");
+      return;
+    }
+    setRestoreErr("");
+    setRestoring(true);
+    try {
+      await restore(file);
+      setPending(null);
+      setRestorePin("");
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   const restore = async (file: File) => {
     try {
       const parsed: unknown = JSON.parse(await file.text());
@@ -168,12 +211,7 @@ function SettingsPage() {
         return;
       }
       const count = (parsed as Record<string, unknown[]>)["bills"]?.length ?? 0;
-      const ok = window.confirm(
-        `Restore backup from ${file.name}?\n\n` +
-          `${count} bills will REPLACE all records on this device (current bills, catalog, customers, settings).\n\n` +
-          "A safety copy of this device's current data will be downloaded first.",
-      );
-      if (!ok) return;
+      void count; // the confirm dialog (already passed) carries the warning
       // Automatic safety copy BEFORE anything is replaced. If the copy cannot
       // be produced, the restore is aborted — current data stays untouched.
       try {
@@ -290,7 +328,7 @@ function SettingsPage() {
 
         <CloudBackupCard />
         <RestoreStarterCard />
-        <BackupHygieneCard onRestoreFile={restore} fileRef={fileRef} />
+        <BackupHygieneCard onRestoreFile={requestRestore} fileRef={fileRef} />
         <DeviceNameCard />
         <DataSafetyCard />
 
@@ -325,6 +363,71 @@ function SettingsPage() {
           {printing && <ReceiptView bill={printing} settings={s} stylists={stylists} />}
         </PrintPortal>
       </div>
+
+      {/* Restore confirmation — the owner PIN is checked here, BEFORE any file
+          is read or any table is touched. */}
+      <Dialog
+        open={pending !== null}
+        onOpenChange={(open) => {
+          if (!open && !restoring) {
+            setPending(null);
+            setRestorePin("");
+            setRestoreErr("");
+          }
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Are you sure?</DialogTitle>
+            <DialogDescription>
+              Restore “{pending?.name}” from this file? Replaces data on every device. Owner only.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-2xl bg-secondary px-4 py-3 text-sm">
+            Every bill, catalog item, customer and setting on this salon is replaced by the
+            file&apos;s contents, then synced to every connected device. A safety copy of the
+            current data is downloaded first.
+          </div>
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-muted-foreground">Owner PIN</span>
+            <input
+              type="password"
+              inputMode="numeric"
+              autoFocus
+              maxLength={8}
+              value={restorePin}
+              onChange={(e) => {
+                setRestorePin(e.target.value.replace(/\D/g, ""));
+                setRestoreErr("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && restorePin) void confirmRestore();
+              }}
+              className="tap w-full rounded-xl border border-input bg-card px-3 py-2 outline-none focus:ring-2 focus:ring-ring"
+            />
+          </label>
+          {restoreErr && <p className="text-sm font-semibold text-destructive">{restoreErr}</p>}
+          <DialogFooter>
+            <button
+              onClick={() => {
+                setPending(null);
+                setRestorePin("");
+                setRestoreErr("");
+              }}
+              className="tap rounded-xl bg-secondary px-5 py-2.5 font-semibold"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => void confirmRestore()}
+              disabled={!restorePin || restoring}
+              className="tap rounded-xl bg-destructive px-5 py-2.5 font-semibold text-destructive-foreground disabled:opacity-50"
+            >
+              {restoring ? "Restoring…" : "Replace data & restore"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -486,6 +589,9 @@ function BackupHygieneCard({
 }) {
   const [offsite, setOffsite] = useState<number | null>(() => getMeta(META_KEYS.offsite));
   const [drill, setDrill] = useState<number | null>(() => getMeta(META_KEYS.drill));
+  const [drillResult, setDrillResult] = useState<string | null>(() =>
+    getMetaText(META_KEYS.drillResult),
+  );
   const [drilling, setDrilling] = useState(false);
 
   const daysSince = (at: number | null) =>
@@ -493,44 +599,60 @@ function BackupHygieneCard({
   const offsiteAge = daysSince(offsite);
   const drillAge = daysSince(drill);
 
+  // "<epochMs>|passed — 8 tables match, 2 bills" → date + wording for the footer.
+  const resultAt = drillResult ? Number(drillResult.slice(0, drillResult.indexOf("|"))) : null;
+  const lastCheckAt = [drill, resultAt].reduce<number | null>(
+    (acc, n) => (typeof n === "number" && !Number.isNaN(n) ? Math.max(acc ?? n, n) : acc),
+    null,
+  );
+  const resultText = drillResult ? drillResult.slice(drillResult.indexOf("|") + 1) : "";
+  const drillLine =
+    lastCheckAt === null
+      ? "No restore check recorded yet — run one now to prove the restore path works."
+      : `Last restore check: ${new Date(lastCheckAt).toLocaleDateString("en-IN")}${
+          resultText ? ` · ${resultText}` : ""
+        }`;
+
   /**
-   * Quarterly restore drill: export this device, validate the export, restore
-   * it straight back, and confirm the bill count is identical. A backup that
-   * was never restored is not proven.
+   * Restore check (formerly the "restore drill"): export this device, then
+   * work out ON PAPER how many rows each table would hold if that backup were
+   * restored and compare with the live counts. It never opens a transaction
+   * and never writes a table — see lib/restoreDrill.ts. The date and the
+   * result are recorded; only a passed check refreshes the quarterly nudge.
    */
   const runDrill = async () => {
     if (drilling) return;
     const ok = window.confirm(
-      "Restore drill (safe):\n\n" +
+      "Check that a backup can be restored (does not change your data):\n\n" +
         "1. This device's data is exported to a JSON snapshot.\n" +
-        "2. The snapshot is validated and restored onto this device.\n" +
-        "3. Bill counts are compared — anything missing fails the drill.\n\n" +
-        "Nothing should change. Continue?",
+        "2. The check works out in memory how many rows each table would hold after restoring it.\n" +
+        "3. Those numbers are compared with the live tables — nothing is restored, nothing is written.\n\n" +
+        "Continue?",
     );
     if (!ok) return;
     setDrilling(true);
+    const record = async (summary: string, passed: boolean) => {
+      const at = Date.now();
+      setMetaText(META_KEYS.drillResult, `${at}|${summary}`);
+      setDrillResult(`${at}|${summary}`);
+      if (passed) {
+        setMeta(META_KEYS.drill, at);
+        setDrill(at);
+      }
+      await logAudit("backup.drill", summary);
+    };
     try {
-      const before = await db.bills.count();
       const snapshot = await snapshotAll();
       const json = JSON.parse(JSON.stringify(snapshot)) as unknown;
-      if (!validateBackup(json)) {
-        toast.error("Drill FAILED — the export is not a valid backup");
-        return;
-      }
-      const r = await restoreBackup(json as Record<string, unknown[]>);
-      const after = await db.bills.count();
-      if (after !== before || r.bills !== before) {
-        toast.error(`Drill FAILED — ${before} bills before, ${after} after. Keep the JSON export!`);
-        return;
-      }
-      const at = Date.now();
-      setMeta(META_KEYS.drill, at);
-      setDrill(at);
-      await logAudit("backup.drill", `${after} bills round-trip OK`);
-      toast.success(`Restore drill passed · ${after} bills round-trip OK`);
+      const res = await runRestoreDrill(json);
+      const summary = drillSummary(res);
+      await record(summary, res.ok);
+      if (res.ok) toast.success(`Backup can be restored · ${summary}`);
+      else toast.error(`Backup check FAILED — ${summary}`);
     } catch (e) {
       console.error(e);
-      toast.error("Drill FAILED — restore threw an error");
+      await record("failed — the check threw an error", false);
+      toast.error("Backup check FAILED — the check threw an error");
     } finally {
       setDrilling(false);
     }
@@ -562,58 +684,80 @@ function BackupHygieneCard({
         <div className="flex items-start gap-2 rounded-2xl bg-gold-soft px-4 py-3 text-sm font-medium">
           <AlertTriangle className="mt-0.5 size-4 shrink-0 text-accent-foreground" />
           <span>
-            Restore drill due — last one was {drillAge} days ago. Run it below (quarterly).
+            Restore check due — last passed one was {drillAge} days ago. Run it below (quarterly).
           </span>
         </div>
       )}
 
-      <div className="flex flex-wrap gap-3">
-        <button
-          onClick={() =>
-            void downloadLocalBackup().then((n) =>
-              toast.success(`JSON backup saved · ${n} bills — email or Drive it`),
-            )
-          }
-          className="tap flex items-center gap-2 rounded-xl bg-secondary px-5 py-2.5 font-semibold"
-        >
-          <Download className="size-4" /> JSON backup
-        </button>
-        <button
-          onClick={() =>
-            void downloadBillsCsv().then((n) => toast.success(`CSV saved · ${n} bills`))
-          }
-          className="tap flex items-center gap-2 rounded-xl bg-secondary px-5 py-2.5 font-semibold"
-        >
-          <Download className="size-4" /> Bills CSV
-        </button>
-        <button
-          onClick={() =>
-            void downloadMonthlyCopy().then(({ bills }) => {
-              setOffsite(Date.now());
-              toast.success(
-                `Monthly copy saved · ${bills} bills (JSON + CSV) — send them off this device`,
-                { duration: 6000 },
-              );
-            })
-          }
-          className="tap flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 font-semibold text-accent-foreground"
-        >
-          <Upload className="size-4" /> Monthly off-platform copy
-        </button>
-        <button
-          onClick={() => fileRef.current?.click()}
-          className="tap flex items-center gap-2 rounded-xl bg-secondary px-5 py-2.5 font-semibold"
-        >
-          <Upload className="size-4" /> Restore from file…
-        </button>
-        <button
-          onClick={() => void runDrill()}
-          disabled={drilling}
-          className="tap flex items-center gap-2 rounded-xl bg-secondary px-5 py-2.5 font-semibold disabled:opacity-60"
-        >
-          <RefreshCw className={`size-4 ${drilling ? "animate-spin" : ""}`} />
-          {drilling ? "Running drill…" : "Run restore drill"}
-        </button>
+      <div className="flex flex-wrap gap-x-4 gap-y-3">
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() =>
+              void downloadLocalBackup().then((n) =>
+                toast.success(`JSON backup saved · ${n} bills — email or Drive it`),
+              )
+            }
+            className="tap flex items-center gap-2 rounded-xl bg-secondary px-5 py-2.5 font-semibold"
+          >
+            <Download className="size-4" /> Backup file (for restoring)
+          </button>
+          <p className="max-w-56 text-xs text-muted-foreground">
+            One file with everything in it — this is the file a restore reads.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() =>
+              void downloadBillsCsv().then((n) => toast.success(`CSV saved · ${n} bills`))
+            }
+            className="tap flex items-center gap-2 rounded-xl bg-secondary px-5 py-2.5 font-semibold"
+          >
+            <Download className="size-4" /> Bills spreadsheet (CSV)
+          </button>
+          <p className="max-w-56 text-xs text-muted-foreground">
+            Every bill as a spreadsheet, for your records or accountant — it cannot be restored
+            from.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() =>
+              void downloadMonthlyCopy().then(({ bills }) => {
+                setOffsite(Date.now());
+                toast.success(
+                  `Monthly copy saved · ${bills} bills (JSON + CSV) — send them off this device`,
+                  { duration: 6000 },
+                );
+              })
+            }
+            className="tap flex items-center gap-2 rounded-xl bg-accent px-5 py-2.5 font-semibold text-accent-foreground"
+          >
+            <Upload className="size-4" /> Monthly off-platform copy
+          </button>
+        </div>
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => fileRef.current?.click()}
+            className="tap flex items-center gap-2 rounded-xl bg-secondary px-5 py-2.5 font-semibold"
+          >
+            <Upload className="size-4" /> Restore from file…
+          </button>
+          <p className="max-w-56 text-xs font-semibold text-destructive">
+            Replaces data on every device. Owner only.
+          </p>
+        </div>
+        <div className="flex flex-col gap-1">
+          <button
+            onClick={() => void runDrill()}
+            disabled={drilling}
+            className="tap flex max-w-72 items-center gap-2 rounded-xl bg-secondary px-5 py-2.5 text-left font-semibold disabled:opacity-60"
+          >
+            <RefreshCw className={`size-4 shrink-0 ${drilling ? "animate-spin" : ""}`} />
+            {drilling
+              ? "Checking…"
+              : "Check that a backup can be restored (does not change your data)"}
+          </button>
+        </div>
         <input
           ref={fileRef}
           type="file"
@@ -629,9 +773,7 @@ function BackupHygieneCard({
         {offsite === null
           ? "No off-platform copy recorded yet on this device."
           : `Off-platform copy: ${new Date(offsite).toLocaleDateString("en-IN")} · `}
-        {drill === null
-          ? "No restore drill recorded yet — run one now to prove the restore path works."
-          : `Last restore drill: ${new Date(drill).toLocaleDateString("en-IN")}`}
+        {drillLine}
       </p>
     </section>
   );
@@ -647,9 +789,38 @@ function BackupHygieneCard({
  * otherwise every bill from this device would silently export as
  * "Unknown device". Renaming affects FUTURE bills only; saved bills keep the
  * name they were stamped with, exactly like a receipt reprint.
+ *
+ * The field is a DRAFT: typing changes nothing until Save. Save stores it and
+ * shows “Saved ✓” + a toast; Cancel puts the saved name back. The helper text
+ * promises what new bills will read, so it only ever shows the SAVED name.
+ * Exported for the regression test.
  */
-function DeviceNameCard() {
-  const [name, setName] = useState(() => getDeviceName());
+export function DeviceNameCard() {
+  const [saved, setSaved] = useState(() => getDeviceName());
+  const [draft, setDraft] = useState(() => getDeviceName());
+  const [justSaved, setJustSaved] = useState(false);
+
+  const clean = draft.trim().slice(0, 40);
+  const dirty = clean !== saved.trim(); // save is disabled until the draft differs
+  const canSave = dirty && clean.length > 0;
+
+  const save = () => {
+    if (!canSave) return;
+    setDeviceName(clean);
+    setSaved(clean);
+    setDraft(clean);
+    setJustSaved(true);
+    void logAudit("device.name", clean || "(cleared)");
+    toast.success(`Device name saved — new bills will read “${clean}”`);
+  };
+
+  const cancel = () => {
+    setDraft(saved);
+    setJustSaved(false);
+  };
+
+  const showSaved = justSaved && !dirty;
+
   return (
     <section className="rounded-3xl bg-card p-5 shadow-soft">
       <div>
@@ -664,22 +835,40 @@ function DeviceNameCard() {
       <label className="block">
         <span className="mb-1 block text-sm font-medium text-muted-foreground">Device name</span>
         <input
-          value={name}
+          value={draft}
           maxLength={40}
           placeholder="Counter, Owner phone…"
-          onChange={(e) => setName(e.target.value)}
-          onBlur={() => {
-            const clean = name.trim().slice(0, 40);
-            setDeviceName(clean);
-            setName(clean);
-            void logAudit("device.name", clean || "(cleared)");
+          onChange={(e) => {
+            setDraft(e.target.value);
+            setJustSaved(false);
           }}
           className="tap w-full rounded-xl border border-input bg-card px-3 py-2 outline-none focus:ring-2 focus:ring-ring"
         />
       </label>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <button
+          onClick={save}
+          disabled={!canSave}
+          className="tap rounded-xl bg-primary px-5 py-2.5 font-semibold text-primary-foreground disabled:opacity-50"
+        >
+          Save
+        </button>
+        <button
+          onClick={cancel}
+          disabled={!dirty}
+          className="tap rounded-xl bg-secondary px-5 py-2.5 font-semibold disabled:opacity-50"
+        >
+          Cancel
+        </button>
+        {showSaved && (
+          <span className="text-sm font-bold text-success" data-testid="device-saved">
+            Saved ✓
+          </span>
+        )}
+      </div>
       <p className="mt-2 text-xs text-muted-foreground">
-        {name.trim()
-          ? `New bills on this device will read “${name.trim()}”.`
+        {saved.trim()
+          ? `New bills on this device will read “${saved.trim()}”.`
           : "No name set — new bills on this device will read \u201cUnknown device\u201d."}
       </p>
     </section>

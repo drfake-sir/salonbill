@@ -73,12 +73,47 @@ describe("Cloud backup (automatic) card", () => {
     expect(src).toContain("Back up now");
   });
 
-  it("keeps the manual backup & restore card untouched", () => {
-    expect(src).toContain("JSON backup");
-    expect(src).toContain("Bills CSV");
+  it("renames the two backup buttons in plain words, with a line under each", () => {
+    expect(src).toContain("Backup file (for restoring)");
+    expect(src).toContain("Bills spreadsheet (CSV)");
     expect(src).toContain("Monthly off-platform copy");
     expect(src).toContain("Restore from file…");
-    expect(src).toContain("Run restore drill");
+    expect(src).toContain("Check that a backup can be restored (does not change your data)");
+    // The plain-words names are the BUTTON labels, not just prose:
+    expect(src).toMatch(/\/> Backup file \(for restoring\)/);
+    expect(src).toMatch(/\/> Bills spreadsheet \(CSV\)/);
+    expect(src).not.toMatch(/\/> JSON backup/);
+    expect(src).not.toMatch(/\/> Bills CSV/);
+    expect(src).not.toContain("Run restore drill");
+    // …each with one explanatory line underneath:
+    expect(src).toContain("One file with everything in it — this is the file a restore reads.");
+    expect(src).toContain(
+      "Every bill as a spreadsheet, for your records or accountant — it cannot be restored",
+    );
+    // The warning line sits with Restore from file:
+    expect(src).toContain("Replaces data on every device. Owner only.");
+  });
+
+  it("does not change what any export does", () => {
+    expect(src).toContain("downloadLocalBackup().then(");
+    expect(src).toContain("downloadBillsCsv().then(");
+    expect(src).toContain("downloadMonthlyCopy().then(");
+    expect(src).toContain("fileRef.current?.click()");
+    expect(src).toContain('accept="application/json,.json"');
+  });
+
+  it("asks for the owner PIN before a restore from file starts", () => {
+    expect(src).toContain("Are you sure?");
+    expect(src).toMatch(/verifyPin\(s\.ownerPin, restorePin\)/);
+    const start = src.indexOf("const confirmRestore");
+    expect(start).toBeGreaterThan(-1);
+    const body = src.slice(start, src.indexOf("const restore =", start));
+    // PIN first, then — and only then — the destructive restore:
+    expect(body).toMatch(/if \(!s\.ownerPin \|\| !\(await verifyPin/);
+    expect(body).toContain("await restore(file)");
+    expect(body).not.toContain("window.confirm");
+    // …and the confirmation dialog itself carries the warning.
+    expect(src).toContain("Replaces data on every device. Owner only.");
   });
 });
 

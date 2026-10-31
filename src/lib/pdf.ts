@@ -1,4 +1,5 @@
 import type { Bill, Settings, Stylist } from "./db";
+import type { ReportFigures } from "./reports";
 import { inr, waLink, billWaText } from "./billing";
 
 /*
@@ -238,5 +239,152 @@ export async function shareBillPdf(
     const chat = waLink(bill.customerPhone, billWaText(bill, settings));
     if (chat) window.open(chat, "_blank", "noopener");
   }
+  return "downloaded";
+}
+
+/** Deterministic filename for a range report: SalonBill-Report-<from>-to-<to>.pdf */
+export function reportPdfFilename(from: string, to: string): string {
+  return `SalonBill-Report-${from}-to-${to}.pdf`;
+}
+
+function reportHtml(f: ReportFigures, settings: Settings): string {
+  const shop = settings.salonName?.trim() || "SalonBill";
+  const cell = "padding:9px 0;border-bottom:1px solid " + LINE + ";font-size:14px;";
+  const head =
+    "text-align:left;font-size:11px;font-weight:700;color:" +
+    MUTED +
+    ";letter-spacing:0.12em;text-transform:uppercase;padding-bottom:8px;";
+
+  const payRows =
+    f.payments.length === 0
+      ? `<tr><td style="${cell}" colspan="2" color:${MUTED};">No paid bills in this range</td></tr>`
+      : f.payments
+          .map(
+            (p) => `
+      <tr>
+        <td style="${cell};">${esc(p.mode)}</td>
+        <td style="${cell};text-align:right;font-variant-numeric:tabular-nums;">${inr(p.amount)}</td>
+      </tr>`,
+          )
+          .join("");
+
+  const stylistRows = f.stylists
+    .map(
+      (s) => `
+      <tr>
+        <td style="${cell};">${esc(s.name)}</td>
+        <td style="${cell};text-align:right;font-variant-numeric:tabular-nums;">${s.services}</td>
+        <td style="${cell};text-align:right;font-variant-numeric:tabular-nums;">${inr(s.sales)}</td>
+      </tr>`,
+    )
+    .join("");
+
+  return `
+  <div style="width:700px;background:#ffffff;font-family:'Plus Jakarta Sans',system-ui,-apple-system,sans-serif;color:${INK};box-sizing:border-box;">
+    <div style="background:${NAVY};padding:26px 34px 24px;">
+      <div style="font-size:25px;font-weight:800;color:#ffffff;letter-spacing:-0.02em;">${esc(shop)}</div>
+      <div style="font-size:15px;font-weight:700;color:${GOLD};margin-top:6px;">Sales report</div>
+      <div style="font-size:13px;color:#b9c2d6;margin-top:6px;">${esc(f.label)} · generated ${fmtDate(Date.now())}</div>
+    </div>
+    <div style="height:6px;background:linear-gradient(90deg,${GOLD},#b87e14);"></div>
+
+    <div style="padding:26px 34px 32px;">
+      <div style="display:flex;gap:16px;">
+        <div style="flex:1;background:#f5f7fb;border-radius:12px;padding:16px 18px;">
+          <div style="font-size:11px;font-weight:700;color:${MUTED};letter-spacing:0.12em;text-transform:uppercase;">Total sales</div>
+          <div style="font-size:30px;font-weight:800;margin-top:6px;letter-spacing:-0.02em;">${inr(f.sales)}</div>
+        </div>
+        <div style="flex:1;background:#f5f7fb;border-radius:12px;padding:16px 18px;">
+          <div style="font-size:11px;font-weight:700;color:${MUTED};letter-spacing:0.12em;text-transform:uppercase;">Bills</div>
+          <div style="font-size:30px;font-weight:800;margin-top:6px;letter-spacing:-0.02em;">${f.bills}</div>
+        </div>
+      </div>
+
+      <div style="display:flex;gap:30px;margin-top:26px;">
+        <div style="flex:1;">
+          <div style="font-size:15px;font-weight:800;color:${INK};margin-bottom:6px;">Payment split</div>
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr><th style="${head}">Mode</th><th style="${head}text-align:right;">Amount</th></tr></thead>
+            <tbody>${payRows}</tbody>
+          </table>
+        </div>
+        <div style="flex:1;">
+          <div style="font-size:15px;font-weight:800;color:${INK};margin-bottom:6px;">By stylist</div>
+          <table style="width:100%;border-collapse:collapse;">
+            <thead><tr><th style="${head}">Stylist</th><th style="${head}text-align:right;">Services</th><th style="${head}text-align:right;">Sales</th></tr></thead>
+            <tbody>${stylistRows || `<tr><td style="${cell}" colspan="3" color:${MUTED};">No stylists yet</td></tr>`}</tbody>
+          </table>
+        </div>
+      </div>
+
+      <div style="margin-top:28px;border-top:1px dashed ${LINE};padding-top:14px;font-size:12px;color:${MUTED};line-height:1.6;">
+        Cancelled and held bills are excluded. Total sales include GST and tip; per-stylist sales are the pre-tax value of services each stylist did. Commission is not shown in reports.
+      </div>
+    </div>
+  </div>`;
+}
+
+/** Render the report off-screen and return it as an A4 PDF blob. */
+export async function buildReportPdf(f: ReportFigures, settings: Settings): Promise<Blob> {
+  const [{ jsPDF }, { default: html2canvas }] = await Promise.all([
+    import("jspdf"),
+    import("html2canvas-pro"),
+  ]);
+
+  const host = document.createElement("div");
+  host.style.cssText =
+    "position:fixed;left:-10000px;top:0;background:#fff;z-index:-1;pointer-events:none;";
+  host.innerHTML = reportHtml(f, settings);
+  document.body.appendChild(host);
+
+  try {
+    const card = host.firstElementChild as HTMLElement;
+    const canvas = await html2canvas(card, { scale: 2, backgroundColor: "#ffffff" });
+    const png = canvas.toDataURL("image/png");
+
+    // A4, height grows so a long stylist list never clips.
+    const pageW = 210;
+    const pageH = 297;
+    const margin = 10;
+    const imgW = pageW - margin * 2;
+    const imgH = (canvas.height / canvas.width) * imgW;
+    const doc = new jsPDF({
+      orientation: "portrait",
+      unit: "mm",
+      format: [pageW, Math.max(pageH, imgH + margin * 2)],
+    });
+    doc.addImage(png, "PNG", margin, margin, imgW, imgH, undefined, "FAST");
+    return doc.output("blob");
+  } finally {
+    host.remove();
+  }
+}
+
+/**
+ * Hand the report over: share sheet where the platform offers one (files are
+ * supported), plain download otherwise.
+ */
+export async function shareReportPdf(f: ReportFigures, settings: Settings): Promise<ShareResult> {
+  const blob = await buildReportPdf(f, settings);
+  const filename = reportPdfFilename(f.fromKey, f.toKey);
+  const file = new File([blob], filename, { type: "application/pdf" });
+
+  const nav = navigator as Navigator & { canShare?: (d?: ShareData) => boolean };
+  if (nav.share && nav.canShare?.({ files: [file] })) {
+    try {
+      await nav.share({ files: [file], text: `Sales report — ${f.label}` });
+      return "shared";
+    } catch (e) {
+      if (e instanceof DOMException && e.name === "AbortError") return "cancelled";
+      // NotAllowedError / no target: fall through to a download.
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 30_000);
   return "downloaded";
 }

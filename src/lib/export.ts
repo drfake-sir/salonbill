@@ -13,6 +13,8 @@ import { istDate, istDayStart, istTime, istWeekday, toCsvFile } from "./earnings
 export const META_KEYS = {
   offsite: "sb-offsite-export-at",
   drill: "sb-restore-drill-at",
+  /** Last restore CHECK result: "<epochMs>|passed — 8 tables match, 2 bills". */
+  drillResult: "sb-restore-drill-result",
   /** When this device last downloaded a JSON backup (Sunday reminder). */
   sunday: "sb-sunday-backup-at",
 } as const;
@@ -29,6 +31,23 @@ export function getMeta(key: string): number | null {
 export function setMeta(key: string, at: number) {
   try {
     localStorage.setItem(key, String(at));
+  } catch {
+    /* private mode */
+  }
+}
+
+/** Text counterpart of getMeta — for free-form records like the drill result. */
+export function getMetaText(key: string): string | null {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+export function setMetaText(key: string, value: string) {
+  try {
+    localStorage.setItem(key, value);
   } catch {
     /* private mode */
   }

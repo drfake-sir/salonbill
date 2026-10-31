@@ -707,7 +707,12 @@ export async function pruneDrafts(days = 30) {
 
 /* ----------------------------- backup restore ---------------------------- */
 
-const RESTORABLE = [
+/**
+ * The tables a backup restore replaces (drafts are per-tab ephemera and sync
+ * is an outbox, so neither is ever restored). Exported so the restore CHECK
+ * (lib/restoreDrill) can reason about exactly the same set without writing.
+ */
+export const RESTORABLE = [
   "categories",
   "services",
   "products",

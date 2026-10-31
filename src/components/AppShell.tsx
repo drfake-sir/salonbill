@@ -1,8 +1,17 @@
 import { useEffect, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { Receipt, Scissors, Settings, History, Lock, Unlock, IndianRupee } from "lucide-react";
+import {
+  Receipt,
+  Scissors,
+  Settings,
+  History,
+  Lock,
+  Unlock,
+  IndianRupee,
+  FileText,
+} from "lucide-react";
 import { seedIfEmpty } from "@/lib/db";
-import { setSession, restoreSession, touchOwner, useSession } from "@/lib/lock";
+import { setSession, restoreSession, touchOwner, useOwner, useSession } from "@/lib/lock";
 import { startSyncEngine } from "@/lib/syncClient";
 import { registerServiceWorker, requestPersistentStorage } from "@/lib/pwa";
 import { BackupReminder, DataWarnings, SalonGate, SyncPill } from "./SyncGate";
@@ -12,11 +21,15 @@ const nav = [
   { to: "/bills", label: "Bills", icon: History },
   { to: "/earnings", label: "Earnings", icon: IndianRupee },
   { to: "/catalog", label: "Catalog", icon: Scissors },
+  // Owner's menu: reports are owner-only, so the entry is not even rendered
+  // for a staff session (the route is wrapped in OwnerOnly as well).
+  { to: "/reports", label: "Reports", icon: FileText, ownerOnly: true },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
   const session = useSession();
+  const owner = useOwner();
   const path = useRouterState({ select: (st) => st.location.pathname });
   // Settings stays reachable outside the gates: it is the recovery path
   // (owner PIN, restore backup, exports) and is owner-protected on its own.
@@ -45,17 +58,19 @@ export function AppShell({ children }: { children: ReactNode }) {
             SB
           </div>
         </div>
-        {nav.map(({ to, label, icon: Icon }) => (
-          <Link
-            key={to}
-            to={to}
-            activeOptions={{ exact: true }}
-            className="tap flex flex-1 flex-col items-center justify-center gap-1 px-1 pt-2 text-[11px] font-medium opacity-70 md:mx-3 md:flex-none md:rounded-2xl md:py-3 data-[status=active]:bg-sidebar-accent data-[status=active]:text-sidebar-primary data-[status=active]:opacity-100"
-          >
-            <Icon className="size-5" />
-            {label}
-          </Link>
-        ))}
+        {nav
+          .filter((n) => !("ownerOnly" in n) || owner)
+          .map(({ to, label, icon: Icon }) => (
+            <Link
+              key={to}
+              to={to}
+              activeOptions={{ exact: true }}
+              className="tap flex flex-1 flex-col items-center justify-center gap-1 px-1 pt-2 text-[11px] font-medium opacity-70 md:mx-3 md:flex-none md:rounded-2xl md:py-3 data-[status=active]:bg-sidebar-accent data-[status=active]:text-sidebar-primary data-[status=active]:opacity-100"
+            >
+              <Icon className="size-5" />
+              {label}
+            </Link>
+          ))}
         <button
           onClick={() => setSession(null)}
           disabled={!session}
